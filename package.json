@@ -12,11 +12,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gsanhueza/pi-llama-cpp.git"
+    "url": "git+https://github.com/gregoo/pi-llama-cpp.git"
   },
-  "homepage": "https://github.com/gsanhueza/pi-llama-cpp#readme",
+  "homepage": "https://github.com/gregoo/pi-llama-cpp#readme",
   "bugs": {
-    "url": "https://github.com/gsanhueza/pi-llama-cpp/issues"
+    "url": "https://github.com/gregoo/pi-llama-cpp/issues"
   },
   "pi": {
     "extensions": [

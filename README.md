@@ -30,7 +30,7 @@ pi install npm:pi-llama-cpp
 or
 
 ```bash
-pi install https://github.com/gsanhueza/pi-llama-cpp
+pi install https://github.com/gregoo/pi-llama-cpp
 ```
 
 ## Setup
