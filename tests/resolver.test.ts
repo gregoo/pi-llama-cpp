@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_KEY_PLACEHOLDER,
   DEFAULT_LLAMA_SERVER_URL,
+  DEFAULT_THINKING_LEVELS,
 } from "../src/constants";
 
 // Hoisted mock instances — survives vi.resetModules()
@@ -10,6 +11,7 @@ const mockReadStoredCredential = vi.hoisted(() => vi.fn());
 const mockSettingsManager = vi.hoisted(() => ({
   getProjectSettings: vi.fn(),
   getGlobalSettings: vi.fn(),
+  getThinkingBudgets: vi.fn(),
 }));
 
 // Mock getAgentDir, readStoredCredential, and SettingsManager before importing resolver
@@ -180,5 +182,263 @@ describe("API key resolution", () => {
     expect(mockReadStoredCredential).toHaveBeenCalledWith(
       "llama-server=http://127.0.0.1:8080",
     );
+  });
+});
+
+describe("thinking configuration resolution", () => {
+  const mockGetProjectSettings = vi.mocked(
+    mockSettingsManager.getProjectSettings,
+  );
+  const mockGetGlobalSettings = vi.mocked(
+    mockSettingsManager.getGlobalSettings,
+  );
+  const mockGetThinkingBudgets = vi.mocked(
+    mockSettingsManager.getThinkingBudgets,
+  );
+
+  const FULL_MAP: Record<string, string> = {
+    off: "off",
+    minimal: "minimal",
+    low: "low",
+    medium: "medium",
+    high: "high",
+    xhigh: "xhigh",
+    max: "max",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProjectSettings.mockReturnValue({});
+    mockGetGlobalSettings.mockReturnValue({});
+    mockGetThinkingBudgets.mockReturnValue(undefined);
+  });
+
+  describe("global default map (no matching pattern)", () => {
+    it("should return the default per-level specs", () => {
+      const levels = new ConfigResolver().resolveThinkingLevels("any-model");
+
+      for (const level of Object.keys(FULL_MAP))
+        expect(levels[level as keyof typeof levels]).toEqual(
+          DEFAULT_THINKING_LEVELS[level as keyof typeof levels],
+        );
+    });
+
+    it("should apply thinkingBudgets overrides to the overridable levels", () => {
+      mockGetThinkingBudgets.mockReturnValue({ low: 4096 });
+
+      const levels = new ConfigResolver().resolveThinkingLevels("m");
+
+      expect(levels.low).toEqual({ budget: 4096 });
+      // Untouched levels keep their defaults
+      expect(levels.minimal).toEqual({ budget: 1024 });
+      expect(levels.high).toEqual({ budget: 16384 });
+    });
+
+    it("should not apply thinkingBudgets to off and max", () => {
+      mockGetThinkingBudgets.mockReturnValue({
+        off: 99999,
+        max: 1,
+      } as any);
+
+      const levels = new ConfigResolver().resolveThinkingLevels("m");
+
+      expect(levels.off).toEqual({ enable_thinking: false });
+      expect(levels.max).toEqual({});
+    });
+
+    it("should use the defaults when the pattern does not match", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: { "qwen3.5*": { thinkingLevelMap: { low: {} } } },
+      });
+
+      const levels = new ConfigResolver().resolveThinkingLevels("llama-3.1-8b");
+
+      for (const level of Object.keys(FULL_MAP))
+        expect(levels[level as keyof typeof levels]).toEqual(
+          DEFAULT_THINKING_LEVELS[level as keyof typeof levels],
+        );
+    });
+
+    it("should use the defaults when the entry has no usable level map", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: { "*": {} },
+      });
+
+      expect(new ConfigResolver().resolveThinkingLevels("m").low).toEqual(
+        DEFAULT_THINKING_LEVELS.low,
+      );
+    });
+  });
+
+  describe("llamaThinking pattern matching", () => {
+    it("should match wildcard patterns", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: { "qwen3.5*": { thinkingLevelMap: { low: {} } } },
+      });
+
+      expect(
+        new ConfigResolver().resolveThinkingLevels("qwen3.5-27b").low,
+      ).toEqual({});
+      expect(
+        new ConfigResolver().resolveThinkingLevels("other-model").low,
+      ).toEqual(DEFAULT_THINKING_LEVELS.low);
+    });
+
+    it("should treat literal special characters literally, not as regex", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: { "model.v2": { thinkingLevelMap: { low: {} } } },
+      });
+
+      expect(new ConfigResolver().resolveThinkingLevels("modelv2").low).toEqual(
+        DEFAULT_THINKING_LEVELS.low,
+      );
+      expect(
+        new ConfigResolver().resolveThinkingLevels("model.v2").low,
+      ).toEqual({});
+    });
+
+    it("should prefer the most specific (longest) matching pattern", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: {
+          "qwen3.5*": { thinkingLevelMap: { low: { budget: 1 } } },
+          "*": { thinkingLevelMap: { low: { budget: 2 } } },
+        },
+      });
+
+      expect(
+        new ConfigResolver().resolveThinkingLevels("qwen3.5-27b").low,
+      ).toEqual({ budget: 1 });
+    });
+
+    it("should prefer project entries over global entries for the same pattern", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: { "*": { thinkingLevelMap: { low: { budget: 1 } } } },
+      });
+      mockGetGlobalSettings.mockReturnValue({
+        llamaThinking: { "*": { thinkingLevelMap: { low: { budget: 2 } } } },
+      });
+
+      expect(new ConfigResolver().resolveThinkingLevels("m").low).toEqual({
+        budget: 1,
+      });
+    });
+
+    it("should keep global patterns when project defines different ones", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: {
+          "qwen3.5*": { thinkingLevelMap: { low: { budget: 1 } } },
+        },
+      });
+      mockGetGlobalSettings.mockReturnValue({
+        llamaThinking: {
+          "qwen3.6*": { thinkingLevelMap: { low: { budget: 2 } } },
+        },
+      });
+
+      expect(
+        new ConfigResolver().resolveThinkingLevels("qwen3.5-27b").low,
+      ).toEqual({ budget: 1 });
+      expect(
+        new ConfigResolver().resolveThinkingLevels("qwen3.6-27b").low,
+      ).toEqual({ budget: 2 });
+    });
+  });
+
+  describe("llamaThinking level spec parsing", () => {
+    const setMap = (thinkingLevelMap: Record<string, unknown>) =>
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: { "*": { thinkingLevelMap } },
+      });
+
+    it("should parse all additive fields", () => {
+      setMap({
+        low: {
+          budget: 1024,
+          effort: "low",
+          enable_thinking: true,
+          preserve_thinking: false,
+        },
+      });
+
+      expect(new ConfigResolver().resolveThinkingLevels("m").low).toEqual({
+        budget: 1024,
+        effort: "low",
+        enable_thinking: true,
+        preserve_thinking: false,
+      });
+    });
+
+    it("should treat budget 0 as a valid explicit value", () => {
+      setMap({ off: { budget: 0 } });
+
+      expect(new ConfigResolver().resolveThinkingLevels("m").off).toEqual({
+        budget: 0,
+      });
+    });
+
+    it("should treat an empty object as available but adding nothing", () => {
+      setMap({ xhigh: {} });
+
+      expect(new ConfigResolver().resolveThinkingLevels("m").xhigh).toEqual({});
+    });
+
+    it("should treat holes (absent keys) as unavailable (null)", () => {
+      setMap({ low: {} });
+
+      const levels = new ConfigResolver().resolveThinkingLevels("m");
+
+      expect(levels.low).toEqual({});
+      for (const level of Object.keys(FULL_MAP)) {
+        if (level === "low") continue;
+        expect(levels[level as keyof typeof levels]).toBeNull();
+      }
+    });
+
+    it("should treat explicit null as unavailable", () => {
+      setMap({ low: null, medium: {} });
+
+      const levels = new ConfigResolver().resolveThinkingLevels("m");
+
+      expect(levels.low).toBeNull();
+      expect(levels.medium).toEqual({});
+    });
+
+    it("should ignore fields with invalid types", () => {
+      setMap({ low: { budget: "big", effort: 5, enable_thinking: "yes" } });
+
+      expect(new ConfigResolver().resolveThinkingLevels("m").low).toEqual({});
+    });
+  });
+
+  describe("resolveThinkingLevelMap", () => {
+    it("should return the full map when no pattern matches", () => {
+      expect(new ConfigResolver().resolveThinkingLevelMap("any-model")).toEqual(
+        FULL_MAP,
+      );
+    });
+
+    it("should expose available levels by name and null for holes", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaThinking: {
+          "*": {
+            thinkingLevelMap: {
+              off: { enable_thinking: false },
+              low: {},
+              xhigh: { effort: "xhigh" },
+            },
+          },
+        },
+      });
+
+      const map = new ConfigResolver().resolveThinkingLevelMap("m");
+
+      expect(map.off).toBe("off");
+      expect(map.low).toBe("low");
+      expect(map.xhigh).toBe("xhigh");
+      expect(map.minimal).toBeNull();
+      expect(map.medium).toBeNull();
+      expect(map.high).toBeNull();
+      expect(map.max).toBeNull();
+    });
   });
 });

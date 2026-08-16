@@ -67,7 +67,10 @@ export class EventManager {
 
   /**
    * Intercepts the request to add extra information, useful to llama.cpp.
-   * Adds a custom thinking budget to the request payload.
+   * Resolves the per-level thinking spec for this model (from the
+   * `llamaThinking` setting, or the global default map when no pattern
+   * matches) and injects whatever fields the selected level's spec defines:
+   * `thinking_budget_tokens` and/or `chat_template_kwargs`.
    *
    * @param event Request event
    * @returns Updated payload
@@ -84,18 +87,30 @@ export class EventManager {
 
     if (!isLlamaCpp) return payload;
 
-    // Retrieve pi's current thinking level, so we can setup a budget
+    // Resolve pi's current thinking level and this model's level specs
     const resolver = new ConfigResolver();
+    const levels = resolver.resolveThinkingLevels(model);
     const level = resolver.resolveThinkingLevel() ?? "medium";
-    const budgets = resolver.resolveThinkingBudgets();
-    const thinking_budget_tokens = budgets[level];
 
-    // Setup payload
-    if (level === "off")
-      return { ...payload, chat_template_kwargs: { enable_thinking: false } };
+    // Unavailable levels add nothing (Pi should clamp away, defensive)
+    const spec = levels[level];
+    if (spec === null) return payload;
 
-    if (level === "max") return payload;
+    // Inject whatever this level's spec defines
+    const additions: Record<string, unknown> = {};
+    if (spec.budget !== undefined)
+      additions.thinking_budget_tokens = spec.budget;
 
-    return { ...payload, thinking_budget_tokens };
+    const kwargs: Record<string, unknown> = {};
+    if (spec.effort !== undefined) kwargs.reasoning_effort = spec.effort;
+    if (spec.enable_thinking !== undefined)
+      kwargs.enable_thinking = spec.enable_thinking;
+    if (spec.preserve_thinking !== undefined)
+      kwargs.preserve_thinking = spec.preserve_thinking;
+    if (Object.keys(kwargs).length > 0) additions.chat_template_kwargs = kwargs;
+
+    return Object.keys(additions).length > 0
+      ? { ...payload, ...additions }
+      : payload;
   }
 }

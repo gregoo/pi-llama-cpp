@@ -3,6 +3,7 @@ import { DEFAULT_CTX, POLLING_INTERVAL, POLLING_TIMEOUT } from "../constants";
 import { Mode } from "../enums/mode";
 import { Status } from "../enums/status";
 import { DataProperty } from "../interfaces/endpoints/models";
+import { ConfigResolver } from "../resolver";
 import { Server } from "../server";
 
 /**
@@ -174,14 +175,10 @@ export abstract class BaseModel {
       id: this.id,
       name: this.name,
       reasoning: this.reasoning,
-      thinkingLevelMap: {
-        minimal: "minimal",
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "xhigh",
-        max: "max",
-      },
+      // Resolved from the `llamaThinking` setting (per-model wildcard
+      // patterns); unavailable levels are `null` (hidden/skipped/clamped by
+      // Pi). Falls back to the full default map when no pattern matches.
+      thinkingLevelMap: new ConfigResolver().resolveThinkingLevelMap(this.id),
       input: await this.getCapabilities(),
       contextWindow: await this.getContextSize(),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

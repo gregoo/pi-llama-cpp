@@ -1,3 +1,5 @@
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+
 /**
  * This provider's base ID
  */
@@ -49,14 +51,63 @@ export const READABLE_TIMEOUT = 15000;
 export const SERVER_TIMEOUT = 1000;
 
 /**
- * Thinking budgets to send to the server, depending on user-selected level in Pi.
+ * All the thinking levels Pi knows about.
  */
-export const DEFAULT_THINKING_BUDGETS = {
-  off: 0,
-  minimal: 1024,
-  low: 2048,
-  medium: 8192,
-  high: 16384,
-  xhigh: 32768,
-  max: -1,
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly ModelThinkingLevel[];
+
+/**
+ * Additive per-level thinking spec. Whatever fields are set get injected
+ * into the request payload; the rest is left alone. Level names carry no
+ * special meaning — the spec itself dictates what happens.
+ */
+export interface ThinkingLevelSpec {
+  /**
+   * Injected as `thinking_budget_tokens` (0 is a valid value). Omit the
+   * field for an unbounded level (no cap is injected).
+   */
+  budget?: number;
+  /** Injected as `chat_template_kwargs.reasoning_effort` */
+  effort?: string;
+  /** Injected as `chat_template_kwargs.enable_thinking` */
+  enable_thinking?: boolean;
+  /**
+   * Injected as `chat_template_kwargs.preserve_thinking` (model-specific,
+   * does not control thinking enablement)
+   */
+  preserve_thinking?: boolean;
+}
+
+/**
+ * The global default per-level thinking specs, used for models that have no
+ * matching `llamaThinking` pattern. The legacy `thinkingBudgets` setting can
+ * override the `budget` field for `minimal` through `xhigh` (see
+ * {@link THINKING_BUDGET_OVERRIDE_LEVELS}).
+ */
+export const DEFAULT_THINKING_LEVELS: Record<
+  ModelThinkingLevel,
+  ThinkingLevelSpec
+> = {
+  off: { enable_thinking: false },
+  minimal: { budget: 1024 },
+  low: { budget: 2048 },
+  medium: { budget: 8192 },
+  high: { budget: 16384 },
+  xhigh: { budget: 32768 },
+  max: {},
 };
+
+/**
+ * Levels whose default `budget` can be overridden via `thinkingBudgets`.
+ * `off` and `max` are fixed (they are not budget-driven).
+ */
+export const THINKING_BUDGET_OVERRIDE_LEVELS = THINKING_LEVELS.filter(
+  (level) => level !== "off" && level !== "max",
+) as ModelThinkingLevel[];

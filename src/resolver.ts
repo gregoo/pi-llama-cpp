@@ -9,7 +9,10 @@ import { join } from "node:path";
 import {
   API_KEY_PLACEHOLDER,
   DEFAULT_LLAMA_SERVER_URL,
-  DEFAULT_THINKING_BUDGETS,
+  DEFAULT_THINKING_LEVELS,
+  THINKING_BUDGET_OVERRIDE_LEVELS,
+  THINKING_LEVELS,
+  type ThinkingLevelSpec,
 } from "./constants";
 
 export class ConfigResolver {
@@ -133,17 +136,186 @@ export class ConfigResolver {
   }
 
   /**
-   * Resolves the effective thinking budgets from settings
+   * Resolves the effective per-level thinking specs for a model.
    *
-   * @returns Thinking budgets
+   * Reads the `llamaThinking` setting (a dict of wildcard model patterns to
+   * entries, project-level first, then global):
+   *
+   * ```json
+   * {
+   *   "llamaThinking": {
+   *     "qwen3.5*": {
+   *       "thinkingLevelMap": {
+   *         "off": { "enable_thinking": false },
+   *         "minimal": { "effort": "low", "budget": 1024 },
+   *         "low": { "effort": "low", "budget": 8192 },
+   *         "medium": { "effort": "medium", "budget": 8192 },
+   *         "high": { "effort": "xhigh", "budget": 8192 },
+   *         "xhigh": { "effort": "xhigh" }
+   *       }
+   *     }
+   *   }
+   * }
+   * ```
+   *
+   * Each present level key maps to an additive spec — whatever fields are
+   * set get injected into the request payload (see {@link ThinkingLevelSpec}).
+   * Multiple fields can be set at once (e.g. effort + budget). Holes (absent
+   * keys) and explicit `null` mean the level is unavailable; an empty object
+   * means the level is available but adds nothing to the payload.
+   *
+   * When no pattern matches the model (or the entry has no usable
+   * `thinkingLevelMap`), the global default map is used instead, with the
+   * legacy `thinkingBudgets` setting applied as per-level `budget` overrides.
+   *
+   * @param modelId The model ID from the request payload
+   * @returns The effective per-level thinking specs
    */
-  resolveThinkingBudgets(): Record<ModelThinkingLevel, number> {
-    const settingsBudgets = this.settingsManager.getThinkingBudgets() ?? {};
-    const availableBudgets = {
-      ...DEFAULT_THINKING_BUDGETS,
-      ...settingsBudgets,
+  resolveThinkingLevels(
+    modelId: string,
+  ): Record<ModelThinkingLevel, ThinkingLevelSpec | null> {
+    const project = this.settingsManager.getProjectSettings() as Record<
+      string,
+      unknown
+    >;
+    const global = this.settingsManager.getGlobalSettings() as Record<
+      string,
+      unknown
+    >;
+
+    const entries: Record<string, LlamaThinkingEntry> = {
+      ...((global.llamaThinking as Record<string, LlamaThinkingEntry>) ?? {}),
+      ...((project.llamaThinking as Record<string, LlamaThinkingEntry>) ?? {}),
     };
 
-    return availableBudgets;
+    const pattern = this.findBestThinkingPattern(entries, modelId);
+    const raw =
+      pattern !== undefined ? entries[pattern]?.thinkingLevelMap : undefined;
+
+    if (raw === null || typeof raw !== "object")
+      return this.resolveDefaultLevels();
+
+    const levels = {} as Record<ModelThinkingLevel, ThinkingLevelSpec | null>;
+    for (const level of THINKING_LEVELS)
+      levels[level] = this.parseLevelSpec(
+        (raw as Record<string, unknown>)[level],
+      );
+
+    return levels;
   }
+
+  /**
+   * Resolves the global default per-level thinking specs, applying the
+   * legacy `thinkingBudgets` setting as `budget` overrides for the
+   * overridable levels (minimal through xhigh).
+   *
+   * @returns The effective default per-level thinking specs
+   */
+  private resolveDefaultLevels(): Record<
+    ModelThinkingLevel,
+    ThinkingLevelSpec
+  > {
+    const overrides = (this.settingsManager.getThinkingBudgets() ??
+      {}) as Partial<Record<ModelThinkingLevel, number>>;
+
+    const levels = {} as Record<ModelThinkingLevel, ThinkingLevelSpec>;
+    for (const level of THINKING_LEVELS) {
+      const base = DEFAULT_THINKING_LEVELS[level];
+
+      levels[level] =
+        THINKING_BUDGET_OVERRIDE_LEVELS.includes(level) &&
+        typeof overrides[level] === "number"
+          ? { ...base, budget: overrides[level] }
+          : { ...base };
+    }
+
+    return levels;
+  }
+
+  /**
+   * Resolves the thinking level map exposed to Pi for a model.
+   * Available levels are advertised by name; unavailable levels are `null`
+   * (hidden/skipped/clamped by Pi).
+   *
+   * @param modelId The model ID
+   * @returns The effective thinking level map
+   */
+  resolveThinkingLevelMap(
+    modelId: string,
+  ): Record<ModelThinkingLevel, string | null> {
+    const levels = this.resolveThinkingLevels(modelId);
+
+    const map = {} as Record<ModelThinkingLevel, string | null>;
+    for (const level of THINKING_LEVELS)
+      map[level] = levels[level] !== null ? level : null;
+
+    return map;
+  }
+
+  /**
+   * Parses a single level spec from raw settings.
+   *
+   * @param value The raw value (absent, null, or a spec object)
+   * @returns The parsed spec, or null if the level is unavailable
+   */
+  private parseLevelSpec(value: unknown): ThinkingLevelSpec | null {
+    if (value === null || typeof value !== "object") return null;
+
+    const v = value as Record<string, unknown>;
+    const spec: ThinkingLevelSpec = {};
+    if (typeof v.budget === "number") spec.budget = v.budget;
+    if (typeof v.effort === "string") spec.effort = v.effort;
+    if (typeof v.enable_thinking === "boolean")
+      spec.enable_thinking = v.enable_thinking;
+    if (typeof v.preserve_thinking === "boolean")
+      spec.preserve_thinking = v.preserve_thinking;
+
+    return spec;
+  }
+
+  /**
+   * Finds the most specific `llamaThinking` pattern matching a model ID.
+   * Patterns support `*` wildcards. Longest pattern wins; first-defined wins
+   * on ties.
+   *
+   * @param entries The `llamaThinking` entries
+   * @param modelId The model ID to match
+   * @returns The winning pattern, if any
+   */
+  private findBestThinkingPattern(
+    entries: Record<string, LlamaThinkingEntry>,
+    modelId: string,
+  ): string | undefined {
+    let best: string | undefined;
+
+    for (const pattern of Object.keys(entries)) {
+      if (!this.matchesPattern(pattern, modelId)) continue;
+      if (best === undefined || pattern.length > best.length) best = pattern;
+    }
+
+    return best;
+  }
+
+  /**
+   * Checks whether a wildcard pattern matches a model ID.
+   *
+   * @param pattern The pattern (supports `*` wildcards)
+   * @param modelId The model ID
+   * @returns Whether the pattern matches
+   */
+  private matchesPattern(pattern: string, modelId: string): boolean {
+    const escaped = pattern
+      .split("*")
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".*");
+
+    return new RegExp(`^${escaped}$`).test(modelId);
+  }
+}
+
+/**
+ * A single `llamaThinking` settings entry.
+ */
+interface LlamaThinkingEntry {
+  thinkingLevelMap?: unknown;
 }
