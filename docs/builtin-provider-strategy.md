@@ -184,6 +184,16 @@ spike).
 - **Capture ordering.** We must capture the built-in *before* registering
   the wrapper (afterwards `getProvider` returns our own object). Capture on
   `session_start(startup)`; all bundled extensions are loaded by then.
+- **Pre-wrap model resolution clamps thinking to off.** A llama.cpp model
+  chosen via CLI `--model`, default settings or session resume is resolved
+  *before* `session_start`, so the session holds a raw instance
+  (`reasoning: false`) and Pi's `clampThinkingLevel` collapses every level
+  to `off` at session creation. Fix (in `src/index.ts`): after wrapping,
+  re-select the current model via `pi.setModel` (untouched models keep
+  object identity, so this only fires when supercharge changed it) and
+  re-apply the intended level — explicit `--thinking` from argv, else the
+  settings default, else Pi's `DEFAULT_THINKING_LEVEL` (`medium`) — which
+  now clamps against the supercharged model.
 
 ## Phased plan
 
@@ -191,20 +201,22 @@ spike).
    (native eviction → empty `/model`, broken `/llama`). v2 proves the
    wrapper end-to-end, headlessly: supercharged models available through
    full auth passes, live catalog pass-through, stream auth resolution,
-   real prompt round-trip. Remaining TUI-only checks: `/model` shows the
-   thinking toggle; `/llama` works after selecting a model; thinking payload
-   visible in server logs.
-2. **Wrapper module:** move spike logic into `src/` — capture + wrap on
-   `session_start`, resolver-driven supercharge (per-model `llamaModelsConfig`
-   entries instead of the catch-all), pass-through models unchanged on
-   resolver errors; gate on a configured `llama.cpp` credential so the
-   extension is inert otherwise. Tests: supercharge() unit tests + an
-   integration test with a fake built-in provider.
-3. **Injection cutover:** point existing thinking/sampling injection at
-   `provider === "llama.cpp"`; delete the old provider-registration stack
-   (`Server`, `ServerManager`, models, SSE load-wait, `/models` menu).
-4. **Stats:** wrap `streamSimple` in the wrapper (fetch tap for
+   real prompt round-trip. TUI checks passed: `/model` shows thinking
+   levels, payload injection reaches the server, `/llama` intact.
+2. **Wrapper module — DONE.** `src/provider/wrapper.ts`: capture + wrap on
+   `session_start(startup)`, resolver-driven supercharge (per-model
+   `llamaModelsConfig` entries), pass-through models unchanged on resolver
+   errors; inert when the built-in provider is absent.
+3. **Injection cutover — DONE.** Thinking/sampling injection gated on
+   `provider === "llama.cpp"`; level from `ctx.thinkingLevel` (session
+   runtime) with settings/medium fallback; old server stack deleted
+   (`Server`, `ServerManager`, models, SSE load-wait, `/models` menu →
+   sampling-only command). Live-verified: `--thinking off|low` and the
+   default chain all inject the right spec (mock router + payload capture),
+   including the pre-wrap level-restore fix above.
+4. **Stats — TODO.** Wrap `streamSimple` in the wrapper (fetch tap for
    `prompt_progress`) + `message_update` tok/s (per
    `docs/stats-integration.md`), then delete `stats/`.
-5. **Docs/README:** migration notes (what moved into Pi, what the extension
-   still does), config reference for `llamaModelsConfig`.
+5. **Docs/README — DONE.** README rewritten around the built-in provider:
+   setup via `/login llama.cpp` + `/llama`, `llamaModelsConfig` reference,
+   sampling sets, sampling-only `/models` command.
