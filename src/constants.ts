@@ -6,54 +6,9 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 export const LLAMA_PROVIDER_ID = "llama.cpp";
 
 /**
- * This provider's base ID
- */
-export const PROVIDER_PREFIX = "llama-server";
-
-/**
  * This provider's name
  */
 export const PROVIDER_NAME = "Llama.cpp";
-
-/**
- * The default API type used in Pi
- */
-export const API_TYPE = "openai-completions";
-
-/**
- * The placeholder api-key if it couldn't be resolved
- */
-export const API_KEY_PLACEHOLDER = "sk-placeholder";
-
-/**
- * The default URL if the resolver couldn't find it
- */
-export const DEFAULT_LLAMA_SERVER_URL = "http://127.0.0.1:8080";
-
-/**
- * The default context if the server didn't expose it
- */
-export const DEFAULT_CTX = 128000;
-
-/**
- * Polling interval (ms) for checking model load status
- */
-export const POLLING_INTERVAL = 500;
-
-/**
- * Maximum time (ms) to wait for model loading before giving up
- */
-export const POLLING_TIMEOUT = 60000;
-
-/**
- * Reasonable time (ms) to read notifications if context goes stale
- */
-export const READABLE_TIMEOUT = 15000;
-
-/**
- * Timeout (ms) for server verification and SSE support probe
- */
-export const SERVER_TIMEOUT = 1000;
 
 /**
  * All the thinking levels Pi knows about.
@@ -92,7 +47,8 @@ export interface ThinkingLevelSpec {
 
 /**
  * The global default per-level thinking specs, used for models that have no
- * matching `llamaThinking` pattern. The legacy `thinkingBudgets` setting can
+ * matching `llamaModelsConfig` pattern. The legacy `thinkingBudgets`
+ * setting can
  * override the `budget` field for `minimal` through `xhigh` (see
  * {@link THINKING_BUDGET_OVERRIDE_LEVELS}).
  */
