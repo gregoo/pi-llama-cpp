@@ -56,6 +56,9 @@ export class EventManager {
     if (!model || model.provider !== LLAMA_PROVIDER_ID) return payload;
 
     try {
+      // Ask the server to emit prompt_progress SSE chunks so the stats
+      // tap can show prefill progress. Ignored by builds without support.
+      payload.return_progress = true;
       this.applyThinking(payload, model.id, ctx);
       this.applySampling(payload, model.id);
     } catch (error) {

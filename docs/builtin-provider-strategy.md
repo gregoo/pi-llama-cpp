@@ -214,9 +214,12 @@ spike).
    sampling-only command). Live-verified: `--thinking off|low` and the
    default chain all inject the right spec (mock router + payload capture),
    including the pre-wrap level-restore fix above.
-4. **Stats — TODO.** Wrap `streamSimple` in the wrapper (fetch tap for
-   `prompt_progress`) + `message_update` tok/s (per
-   `docs/stats-integration.md`), then delete `stats/`.
+4. **Stats — DONE.** `src/managers/stats.ts`: decode tok/s from
+   `message_update`, prefill bar from a provider-scoped `options.fetch`
+   tap on the wrapper's `streamSimple` (no global fetch patch),
+   `return_progress: true` via `before_provider_request`, display in the
+   `llama-stats` widget. Live-verified against a mock router emitting
+   `prompt_progress`; standalone `stats/` extension deleted.
 5. **Docs/README — DONE.** README rewritten around the built-in provider:
    setup via `/login llama.cpp` + `/llama`, `llamaModelsConfig` reference,
    sampling sets, sampling-only `/models` command.

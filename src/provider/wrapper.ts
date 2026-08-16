@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LLAMA_PROVIDER_ID, THINKING_LEVELS } from "../constants";
 import { ConfigResolver } from "../resolver";
+import { StatsManager } from "../managers/stats";
 
 /**
  * Supercharges Pi's built-in `llama.cpp` provider with per-model thinking
@@ -18,6 +19,11 @@ import { ConfigResolver } from "../resolver";
  *   - everything else (compat, contextWindow, cost, input, baseUrl...) is
  *     preserved exactly as the built-in defined it
  *
+ * `streamSimple` is additionally wrapped with a provider-scoped fetch that
+ * taps the SSE body for llama.cpp `prompt_progress` chunks (prefill stats).
+ * pi-ai's openai-completions client honors `options.fetch`, so no global
+ * fetch patching is needed.
+ *
  * The transform reads the built-in's LIVE catalog on every call, so models
  * loaded/unloaded via Pi's `/llama` appear/disappear in `/model` immediately
  * — no polling, no re-registration, never stale.
@@ -29,7 +35,10 @@ import { ConfigResolver } from "../resolver";
 export class LlamaProviderWrapper {
   private wrapped = false;
 
-  constructor(private readonly resolver: ConfigResolver) {}
+  constructor(
+    private readonly resolver: ConfigResolver,
+    private readonly stats: StatsManager,
+  ) {}
 
   /** Whether the wrapper is registered. */
   get isWrapped(): boolean {
@@ -61,6 +70,11 @@ export class LlamaProviderWrapper {
       id: LLAMA_PROVIDER_ID,
       name: builtin.name ?? LLAMA_PROVIDER_ID,
       getModels: () => this.supercharge(builtin.getModels()),
+      streamSimple: (model, context, options) =>
+        builtin.streamSimple(model, context, {
+          ...options,
+          fetch: this.stats.tapFetch(options?.fetch),
+        }),
     });
 
     this.wrapped = true;

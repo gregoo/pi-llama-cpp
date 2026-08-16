@@ -1,8 +1,17 @@
-# Integrating `stats/llama-cpp-stats.ts` into pi-llama-cpp
+# Integrating `stats/llama-cpp-stats.ts` into pi-llama-cpp — DONE
 
-Analysis of merging the standalone stats extension (real-time prefill/decode
-speed + prefill progress bar) into the main extension, and the impact on the
-issues listed in [`code-review.md`](./code-review.md).
+**Status (implemented):** the standalone `stats/` extension is deleted. Its
+functionality now lives in `src/managers/stats.ts` (`StatsManager`), wired as
+planned below: `return_progress: true` via `before_provider_request`, decode
+tok/s via `message_update`, prefill via a provider-scoped `options.fetch`
+tap on the wrapper's `streamSimple`. Live-verified: prompt_progress chunks
+extracted through the real Pi stream path, body pass-through intact.
+
+---
+
+Original analysis of merging the standalone stats extension (real-time
+prefill/decode speed + prefill progress bar) into the main extension, and
+the impact on the issues listed in [`code-review.md`](./code-review.md).
 
 ## What the stats extension does today
 

@@ -3,6 +3,8 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  type MessageEndEvent,
+  type MessageUpdateEvent,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
@@ -10,12 +12,14 @@ import { LLAMA_PROVIDER_ID, PROVIDER_NAME } from "./constants";
 import { ModelSelectEvent } from "./interfaces/events";
 import { CommandManager } from "./managers/command";
 import { EventManager } from "./managers/events";
+import { StatsManager } from "./managers/stats";
 import { LlamaProviderWrapper } from "./provider/wrapper";
 import { ConfigResolver } from "./resolver";
 
 export default async function (pi: ExtensionAPI) {
   const resolver = new ConfigResolver();
-  const wrapper = new LlamaProviderWrapper(resolver);
+  const stats = new StatsManager();
+  const wrapper = new LlamaProviderWrapper(resolver, stats);
   const eventManager = new EventManager(resolver);
   const commandManager = new CommandManager(resolver);
 
@@ -72,8 +76,10 @@ export default async function (pi: ExtensionAPI) {
   // Events
   pi.on(
     "before_provider_request",
-    async (event: BeforeProviderRequestEvent, ctx: ExtensionContext) =>
-      await eventManager.onBeforeProviderRequest(event, ctx),
+    async (event: BeforeProviderRequestEvent, ctx: ExtensionContext) => {
+      stats.attachUi(ctx);
+      return await eventManager.onBeforeProviderRequest(event, ctx);
+    },
   );
 
   pi.on(
@@ -81,4 +87,13 @@ export default async function (pi: ExtensionAPI) {
     (event: ModelSelectEvent, ctx: ExtensionContext) =>
       eventManager.onModelSelect(event, ctx),
   );
+
+  // Generation stats: decode speed from per-delta updates, prefill from the
+  // provider-scoped stream tap in the wrapper.
+  pi.on("message_update", (event: MessageUpdateEvent, ctx: ExtensionContext) => {
+    stats.attachUi(ctx);
+    stats.onMessageUpdate(event);
+  });
+
+  pi.on("message_end", (event: MessageEndEvent) => stats.onMessageEnd(event));
 }

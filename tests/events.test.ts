@@ -112,6 +112,17 @@ describe("EventManager.onBeforeProviderRequest", () => {
 
       expect(result).toBe(payload);
     });
+
+    it("should request prompt_progress for llama.cpp models only", async () => {
+      const llamaResult = await runRequest(createPayload(), llamaCtx("m"));
+      expect(llamaResult.return_progress).toBe(true);
+
+      const otherResult = await runRequest(
+        createPayload(),
+        createCtx({ id: "gpt-4", provider: "openai" }, "medium"),
+      );
+      expect(otherResult).not.toHaveProperty("return_progress");
+    });
   });
 
   describe("thinking level resolution", () => {
@@ -204,7 +215,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
       const payload = createPayload();
       const result = await runRequest(payload, llamaCtx("m", "max"));
 
-      expect(result).toEqual(payload);
+      expect(result).toEqual({ ...payload, return_progress: true });
       expect(result).not.toHaveProperty("thinking_budget_tokens");
     });
   });
@@ -292,7 +303,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
       const payload = createPayload();
       const result = await runRequest(payload, llamaCtx("qwen3.5-27b", "max"));
 
-      expect(result).toEqual(payload);
+      expect(result).toEqual({ ...payload, return_progress: true });
     });
 
     it("should leave the payload untouched for explicit null levels", async () => {
@@ -301,7 +312,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
       const payload = createPayload();
       const result = await runRequest(payload, llamaCtx("m", "low"));
 
-      expect(result).toEqual(payload);
+      expect(result).toEqual({ ...payload, return_progress: true });
     });
 
     it("should leave the payload untouched for empty-object levels", async () => {
@@ -310,7 +321,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
       const payload = createPayload();
       const result = await runRequest(payload, llamaCtx("m", "low"));
 
-      expect(result).toEqual(payload);
+      expect(result).toEqual({ ...payload, return_progress: true });
     });
 
     it("should use budget-only entries for budget models (e.g. qwen3.6)", async () => {
@@ -406,6 +417,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
 
         expect(result).toEqual({
           ...createPayload(),
+          return_progress: true,
           thinking_budget_tokens: DEFAULT_THINKING_LEVELS.medium.budget,
         });
       });

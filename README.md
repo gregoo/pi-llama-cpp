@@ -16,6 +16,7 @@ Everything else — server connection, authentication, model loading/unloading, 
 - **Per-model thinking configuration** — wildcard-matched `llamaModelsConfig` entries define exactly which levels each model offers and what each level sends
 - **Additive level specs** — combine `budget`, `effort`, `enable_thinking` and `preserve_thinking` freely on any level
 - **Named sampling sets** — independent of thinking; select per model with `/models sampling`, session-only
+- **Generation stats** — real-time tokens/sec during decoding and a prefill progress bar (when your server build supports `return_progress`), in its own widget slot
 - **Live catalog** — the supercharged metadata is applied to Pi's live model list, so `/model` always shows the right levels for whatever is loaded
 
 ## Installation
@@ -140,6 +141,16 @@ How it works:
 - **No match** — when no pattern matches the model, the global default map above is used, with any `thinkingBudgets` overrides applied to the `minimal`–`xhigh` budgets.
 
 Level names carry no special meaning in either path — the spec dictates what is injected, so a level with only `enable_thinking: false` disables thinking, a level with only `effort` sends just the effort, and an empty level sends nothing.
+
+## Generation stats
+
+While a llama.cpp model generates, the extension shows a status widget with:
+
+- **Prefill** — a progress bar with prefill tokens/sec and an ETA, when your llama.cpp build emits `prompt_progress` events (the extension requests them via `return_progress: true`; older builds simply ignore the flag)
+- **Decode** — rolling tokens/sec and token count as tokens arrive (🔧 while streaming tool calls)
+- **Final line** — prefill and decode totals, kept visible until the next generation
+
+The stats are scoped to the built-in llama.cpp provider: decode speed comes from Pi's `message_update` events, and prefill from a fetch tap on that provider's own stream — no global `fetch` patching, and other providers are never touched.
 
 ### Sampling sets (`samplingMap`)
 
