@@ -9,6 +9,16 @@
     "llama-cpp"
   ],
   "author": "Gabriel Sanhueza",
+  "contributors": [
+    {
+      "name": "Gabriel Sanhueza",
+      "url": "https://github.com/gsanhueza"
+    },
+    {
+      "name": "Gregoo",
+      "url": "https://github.com/gregoo"
+    }
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
