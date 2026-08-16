@@ -14,6 +14,7 @@ import { CommandManager } from "./managers/command";
 import { EventManager } from "./managers/events";
 import { StatsManager } from "./managers/stats";
 import { LlamaProviderWrapper } from "./provider/wrapper";
+import { setLlamaDefaultModel } from "./provider/defaultModel";
 import { ConfigResolver } from "./resolver";
 
 export default async function (pi: ExtensionAPI) {
@@ -29,6 +30,17 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_start", async (event: SessionStartEvent, ctx: ExtensionContext) => {
     if (event.reason !== "startup") return;
     wrapper.init(pi, ctx);
+
+    // Register a default model for llama.cpp in Pi's login flow so
+    // /login llama.cpp auto-selects it instead of erroring with "no
+    // default model is configured". Prefer the current model when it is
+    // already a llama.cpp one; otherwise the first loaded model.
+    const provider = ctx.modelRegistry.getProvider(LLAMA_PROVIDER_ID);
+    const defaultModelId =
+      ctx.model && ctx.model.provider === LLAMA_PROVIDER_ID
+        ? ctx.model.id
+        : provider?.getModels?.()[0]?.id;
+    if (defaultModelId) void setLlamaDefaultModel(defaultModelId);
 
     // A llama.cpp model selected before the wrap (CLI --model, default
     // model, session restore) is a raw instance without thinking metadata,

@@ -169,11 +169,15 @@ spike).
   registration *evicts* native providers (`nativeExtensionProviders.delete`) —
   a behavior change here would break us loudly, not silently; (b) the raw
   built-in must be readable via `getProvider` before we wrap it; (c) the
-  "no overlays → provider used untouched" shortcut. Mitigations: minimum
-  peer-dependency version, an integration test asserting the composed list
-  carries our `thinkingLevelMap` AND stays available after a full auth pass,
-  and keeping the wrapper in one small module so a Pi API change is a local
-  fix.
+  "no overlays → provider used untouched" shortcut; (d) for the /login
+  default-model registration, `dist/core/model-resolver.js` keeps exporting
+  a mutable `defaultModelPerProvider` object — resolved by walking up from
+  `process.argv[1]` because the exports map blocks deep imports. That one
+  degrades silently (stock login error returns) if the path moves.
+  Mitigations: minimum peer-dependency version, an integration test
+  asserting the composed list carries our `thinkingLevelMap` AND stays
+  available after a full auth pass, and keeping the wrapper in one small
+  module so a Pi API change is a local fix.
 - **Router-only, single-server.** Inheriting the built-in means dropping
   single-model mode, legacy (ik_llama.cpp) mode, and multi-server
   `llamaServers` users. Accepted per owner; note it in the README migration

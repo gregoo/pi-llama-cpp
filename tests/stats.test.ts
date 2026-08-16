@@ -310,7 +310,7 @@ describe("StatsManager server timings", () => {
     expect(msg).toContain("📖 4487 tokens prefill");
   });
 
-  it("builds the final line from timings when usage is absent, with MTP acceptance", () => {
+  it("builds the final line from timings when usage is absent, with draft acceptance", () => {
     const stats = new StatsManager();
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
@@ -341,7 +341,7 @@ describe("StatsManager server timings", () => {
 
     const msg = setWidget.mock.calls.at(-1)![1][0] as string;
     expect(msg).toContain("📖 27591 (27572 cached) @ 29.1 tok/s");
-    expect(msg).toContain("✨ 422 @ 28.1 tok/s · MTP 76%");
+    expect(msg).toContain("✨ 422 @ 28.1 tok/s · spec 76%");
   });
 
   it("extracts both prompt_progress and timings from tapped chunks", async () => {

@@ -6,6 +6,7 @@ import type {
 import { LLAMA_PROVIDER_ID } from "../constants";
 import type { ModelSelectEvent } from "../interfaces/events";
 import { ConfigResolver } from "../resolver";
+import { setLlamaDefaultModel } from "../provider/defaultModel";
 import { SamplingState, updateSamplingStatus } from "./sampling";
 
 /**
@@ -28,6 +29,9 @@ export class EventManager {
     if (event.model.provider !== LLAMA_PROVIDER_ID) return;
 
     updateSamplingStatus(ctx, event.model.id);
+
+    // Keep Pi's /login default model in sync with the last-used one.
+    void setLlamaDefaultModel(event.model.id);
   }
 
   /**

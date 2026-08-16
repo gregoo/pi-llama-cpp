@@ -34,7 +34,7 @@ interface FinalStats {
   cached?: number;
   genTokens: number;
   avgTps: number;
-  mtpPct?: number;
+  specPct?: number;
 }
 
 const WIDGET_KEY = "llama-stats";
@@ -146,7 +146,8 @@ export class StatsManager {
     if (messageProvider(message) !== LLAMA_PROVIDER_ID) return;
     if (!this.generating && !this.hasPrefill && !this.timings) return;
 
-    // Token count: server usage > server timings (MTP-accurate) > delta count.
+    // Token count: server usage > server timings (spec-decode-accurate)
+    // > delta count.
     const genTokens =
       message.role === "assistant" && message.usage.output > 0
         ? message.usage.output
@@ -196,7 +197,7 @@ export class StatsManager {
       cached,
       genTokens,
       avgTps,
-      mtpPct: draftN > 0 ? Math.round((draftAcc / draftN) * 100) : undefined,
+      specPct: draftN > 0 ? Math.round((draftAcc / draftN) * 100) : undefined,
     };
     this.generating = false;
     this.toolCalling = false;
@@ -323,7 +324,7 @@ export class StatsManager {
         parts.push(prefill);
       }
       let decode = `✨ ${final.genTokens} @ ${final.avgTps.toFixed(1)} tok/s`;
-      if (final.mtpPct !== undefined) decode += ` · MTP ${final.mtpPct}%`;
+      if (final.specPct !== undefined) decode += ` · spec ${final.specPct}%`;
       parts.push(decode);
     }
 
