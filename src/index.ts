@@ -24,12 +24,11 @@ export default async function (pi: ExtensionAPI) {
   const eventManager = new EventManager(resolver);
   const commandManager = new CommandManager(resolver);
 
-  // Supercharge Pi's built-in llama.cpp provider. Runs at session startup,
-  // when getProvider() still returns the raw built-in (no overlay yet).
-  // Inert if the built-in provider is not present.
-  pi.on("session_start", async (event: SessionStartEvent, ctx: ExtensionContext) => {
-    if (event.reason !== "startup") return;
-    wrapper.init(pi, ctx);
+  // Supercharge Pi's built-in llama.cpp provider. Runs on EVERY session
+  // start: /new and /resume rebuild the whole runtime (fresh ModelRuntime,
+  // re-executed extension factories), so each one needs its own wrap.
+  pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
+    const wrapped = wrapper.init(pi, ctx);
 
     // Register a default model for llama.cpp in Pi's login flow so
     // /login llama.cpp auto-selects it instead of erroring with "no
@@ -42,23 +41,41 @@ export default async function (pi: ExtensionAPI) {
         : provider?.getModels?.()[0]?.id;
     if (defaultModelId) void setLlamaDefaultModel(defaultModelId);
 
-    // A llama.cpp model selected before the wrap (CLI --model, default
-    // model, session restore) is a raw instance without thinking metadata,
-    // so Pi clamped its thinking level to off at session creation.
-    // Re-select it so the session holds the supercharged copy, then
-    // restore the intended level. Untouched models keep their object
-    // identity, so this is a no-op unless supercharge changed them.
+    // A llama.cpp model selected before the wrap (CLI --model, settings
+    // default, session restore) is a raw instance without thinking
+    // metadata. Pi resolves the initial thinking level against that raw
+    // model at session creation — and when no model was even resolved yet,
+    // it forces the level to off outright. Either way the level in the
+    // session is not what the user asked for.
+    //
+    // Re-select the model so the session holds the supercharged copy, then
+    // restore the intended level. The composed provider mints a new model
+    // object on every getModels() call, so identity can never be used to
+    // detect "already supercharged" — the re-select always runs, which is
+    // harmless (setModel to an equal model keeps the current level).
     const current = ctx.model;
     if (!current || current.provider !== LLAMA_PROVIDER_ID) return;
 
     const fresh = ctx.modelRegistry.find(LLAMA_PROVIDER_ID, current.id);
-    if (!fresh || fresh === current) return;
+    if (!fresh) return;
 
     await pi.setModel(fresh);
 
-    // Pi's own resolution chain: CLI --thinking, then the settings default,
-    // then its DEFAULT_THINKING_LEVEL ("medium"). Re-applying it now clamps
-    // against the supercharged model instead of the raw one.
+    // The session's thinking level was resolved against the RAW model
+    // before the wrap. If the raw model had no thinking metadata (the
+    // normal case), Pi clamped whatever was requested to off — so the
+    // session level is not what the user asked for. Restore it using Pi's
+    // own chain: settings defaultThinkingLevel, then "medium".
+    //
+    // If the raw model already had thinking metadata (e.g. from models.json
+    // overrides), the session level is genuine and must be kept as-is.
+    //
+    // Note: main.js re-applies --thinking AFTER session_start, so we cannot
+    // read the CLI flag here — we rely on the settings chain instead.
+    // The session's thinking level was resolved against the RAW model
+    // before the wrap, so it was clamped to off. Restore it using Pi's
+    // own chain: CLI --thinking (if present), then settings default,
+    // then "medium".
     const argv = process.argv;
     let cliLevel: string | undefined;
     for (let i = 0; i < argv.length; i++) {
@@ -66,14 +83,11 @@ export default async function (pi: ExtensionAPI) {
       else if (argv[i]?.startsWith("--thinking="))
         cliLevel = argv[i].slice("--thinking=".length);
     }
-    // An explicit --thinking wins outright (including off); otherwise use
-    // Pi's fallback chain: settings default, then "medium".
     const intended =
-      cliLevel !== undefined
-        ? cliLevel
-        : (resolver.resolveThinkingLevel() ?? "medium");
-    if (intended === "off") return;
-    pi.setThinkingLevel(intended as ThinkingLevel);
+      cliLevel ?? resolver.resolveThinkingLevel() ?? "medium";
+    if (intended !== "off") {
+      pi.setThinkingLevel(intended as ThinkingLevel);
+    }
   });
 
   // /sampling — select the sampling set injected for the current model

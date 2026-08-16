@@ -163,13 +163,25 @@ describe("LlamaProviderWrapper.init", () => {
     streamSimple: () => {},
   };
 
-  const makeCtx = (builtin: unknown) =>
-    ({
-      modelRegistry: { getProvider: vi.fn().mockReturnValue(builtin) },
-    }) as any;
+  // Models Pi's real ModelRuntime shape: the raw built-in lives in the
+  // internal nativeExtensionProviders map, and registerProvider() swaps it
+  // out (later init() calls must read the updated value).
+  const makeCtx = (builtin: unknown) => {
+    const natives = new Map<string, unknown>(
+      builtin === undefined ? [] : [["llama.cpp", builtin]],
+    );
+    const runtime = { nativeExtensionProviders: natives };
+    return {
+      modelRegistry: {
+        runtime,
+        getProvider: vi.fn().mockReturnValue(builtin),
+      },
+      _register: (p: unknown) => natives.set("llama.cpp", p),
+    } as any;
+  };
 
-  const makePi = () => {
-    const registerProvider = vi.fn();
+  const makePi = (ctx: any) => {
+    const registerProvider = vi.fn((p: unknown) => ctx._register(p));
     return {
       pi: { registerProvider } as unknown as ExtensionAPI,
       registerProvider,
@@ -184,14 +196,15 @@ describe("LlamaProviderWrapper.init", () => {
   });
 
   it("registers a native provider that passes the built-in through and supercharges getModels", () => {
-    const { pi, registerProvider } = makePi();
+    const ctx = makeCtx(fakeBuiltin);
+    const { pi, registerProvider } = makePi(ctx);
     const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
 
-    expect(wrapper.init(pi, makeCtx(fakeBuiltin))).toBe(true);
+    expect(wrapper.init(pi, ctx)).toBe(true);
     expect(wrapper.isWrapped).toBe(true);
 
     expect(registerProvider).toHaveBeenCalledTimes(1);
-    const registered = registerProvider.mock.calls[0][0];
+    const registered = registerProvider.mock.calls[0][0] as any;
     expect(registered.id).toBe("llama.cpp");
     expect(registered.auth).toBe(fakeBuiltin.auth); // same object
     expect(registered.refreshModels).toBe(fakeBuiltin.refreshModels);
@@ -209,10 +222,11 @@ describe("LlamaProviderWrapper.init", () => {
       async (_model: unknown, _context: unknown, _options: unknown) => {},
     );
     const dynamicBuiltin = { ...fakeBuiltin, streamSimple: builtinStreamSimple };
-    const { pi } = makePi();
+    const ctx = makeCtx(dynamicBuiltin);
+    const { pi } = makePi(ctx);
     const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
 
-    expect(wrapper.init(pi, makeCtx(dynamicBuiltin))).toBe(true);
+    expect(wrapper.init(pi, ctx)).toBe(true);
     const registered = (pi.registerProvider as any).mock.calls[0][0];
 
     // No options.fetch: the tap is still provided (defaults to global fetch)
@@ -235,11 +249,12 @@ describe("LlamaProviderWrapper.init", () => {
   it("reflects live catalog changes without re-registration", () => {
     let live: Model<Api>[] = [baseModel("qwen38-27b")];
     const dynamicBuiltin = { ...fakeBuiltin, getModels: () => live };
-    const { pi, registerProvider } = makePi();
+    const ctx = makeCtx(dynamicBuiltin);
+    const { pi, registerProvider } = makePi(ctx);
     const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
-    wrapper.init(pi, makeCtx(dynamicBuiltin));
+    wrapper.init(pi, ctx);
 
-    const registered = registerProvider.mock.calls[0][0];
+    const registered = registerProvider.mock.calls[0][0] as any;
     expect(registered.getModels().map((m: Model<Api>) => m.id)).toEqual([
       "qwen38-27b",
     ]);
@@ -252,19 +267,33 @@ describe("LlamaProviderWrapper.init", () => {
     ]);
   });
 
-  it("is idempotent — a second init does not re-register", () => {
-    const { pi, registerProvider } = makePi();
+  it("is idempotent — a second init on the same runtime does not re-register", () => {
+    const ctx = makeCtx(fakeBuiltin);
+    const { pi, registerProvider } = makePi(ctx);
     const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
-    wrapper.init(pi, makeCtx(fakeBuiltin));
-    expect(wrapper.init(pi, makeCtx(fakeBuiltin))).toBe(true);
+    wrapper.init(pi, ctx);
+    expect(wrapper.init(pi, ctx)).toBe(true);
     expect(registerProvider).toHaveBeenCalledTimes(1);
   });
 
+  it("re-wraps when the runtime is rebuilt (fresh native map)", () => {
+    const ctx1 = makeCtx(fakeBuiltin);
+    const { pi, registerProvider } = makePi(ctx1);
+    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    wrapper.init(pi, ctx1);
+
+    // /new or /resume: a fresh ModelRuntime with the raw built-in again.
+    const ctx2 = makeCtx(fakeBuiltin);
+    expect(wrapper.init(pi, ctx2)).toBe(true);
+    expect(registerProvider).toHaveBeenCalledTimes(2);
+  });
+
   it("stays inert when the built-in provider is not present", () => {
-    const { pi, registerProvider } = makePi();
+    const ctx = makeCtx(undefined);
+    const { pi, registerProvider } = makePi(ctx);
     const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
 
-    expect(wrapper.init(pi, makeCtx(undefined))).toBe(false);
+    expect(wrapper.init(pi, ctx)).toBe(false);
     expect(wrapper.isWrapped).toBe(false);
     expect(registerProvider).not.toHaveBeenCalled();
   });

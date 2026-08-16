@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LLAMA_PROVIDER_ID, THINKING_LEVELS } from "../constants";
 import { ConfigResolver } from "../resolver";
@@ -32,6 +32,8 @@ import { StatsManager } from "../managers/stats";
  * config form (`pi.registerProvider("llama.cpp", {...})`) evicts the
  * built-in's native provider and with it its auth and refresh behavior.
  */
+const WRAPPER_MARKER = Symbol("llama-provider-wrapper");
+
 export class LlamaProviderWrapper {
   private wrapped = false;
 
@@ -46,23 +48,43 @@ export class LlamaProviderWrapper {
   }
 
   /**
-   * Captures the built-in provider and registers the wrapper. Idempotent —
-   * safe to call from several event handlers until it succeeds.
+   * Captures the built-in provider and registers the wrapper. Idempotent
+   * per ModelRuntime — safe to call on every session start.
    *
-   * Must be called before any other registration for `llama.cpp`, while
-   * `getProvider()` still returns the raw built-in.
+   * /new and /resume rebuild the whole runtime (fresh ModelRuntime, fresh
+   * extension instances), so each one gets its own wrap. The raw built-in
+   * is read from the runtime's internal native-provider map: by the time
+   * `session_start` fires we have already registered into this very
+   * runtime, and `getProvider()` returns the COMPOSED provider (whose base
+   * is our own wrapper) — wrapping that would double-wrap.
    *
    * @param pi The Pi extension API
    * @param ctx The Pi context (for the model registry)
-   * @returns true when the wrapper is active
+   * @returns true when the wrapper is active for this runtime
    */
   init(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
-    if (this.wrapped) return true;
+    const registry = ctx.modelRegistry as unknown as {
+      runtime?: { nativeExtensionProviders?: Map<string, unknown> };
+    };
+    const natives = registry.runtime?.nativeExtensionProviders;
 
-    const builtin = ctx.modelRegistry.getProvider(LLAMA_PROVIDER_ID);
+    // The internal map is untyped; the value is either the raw built-in
+    // provider or (after our first registration) our own wrapper.
+    const builtin = (
+      natives?.get(LLAMA_PROVIDER_ID) ??
+      ctx.modelRegistry.getProvider(LLAMA_PROVIDER_ID)
+    ) as Provider<Api> | undefined;
     if (!builtin || typeof builtin.getModels !== "function") return false;
 
-    pi.registerProvider({
+    // Already wrapped this runtime: the registered provider carries our marker.
+    if (
+      this.wrapped &&
+      (builtin as unknown as Record<PropertyKey, unknown>)[WRAPPER_MARKER]
+    ) {
+      return true;
+    }
+
+    const wrapperProvider: Provider<Api> = {
       // Pass through everything the built-in defines (auth, refreshModels,
       // stream, streamSimple, filterModels, deferred support...) and only
       // replace the model list with the supercharged one.
@@ -75,7 +97,17 @@ export class LlamaProviderWrapper {
           ...options,
           fetch: this.stats.tapFetch(options?.fetch),
         }),
+    };
+
+    // Marker on the registered provider itself (the object literal above is
+    // a new object; the raw built-in is never marked). A later init() on
+    // the same runtime sees it via the internal map and bails.
+    Object.defineProperty(wrapperProvider, WRAPPER_MARKER, {
+      value: true,
+      enumerable: false,
     });
+
+    pi.registerProvider(wrapperProvider);
 
     this.wrapped = true;
     return true;
