@@ -1,58 +1,66 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_THINKING_LEVELS } from "../src/constants";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_THINKING_LEVELS, LLAMA_PROVIDER_ID } from "../src/constants";
+import { EventManager } from "../src/managers/events";
 import { SamplingState } from "../src/managers/sampling";
-import { createMockModel, createMockServer } from "./mocks";
+import { ConfigResolver } from "../src/resolver";
 
-// Create a mutable mock object shared across tests
-const mockSettingsManager = {
-  getDefaultThinkingLevel: vi.fn(() => "medium"),
-  getThinkingBudgets: vi.fn<() => Record<string, number> | undefined>(),
-  getProjectSettings: vi.fn<() => Record<string, unknown>>(() => ({})),
-  getGlobalSettings: vi.fn<() => Record<string, unknown>>(() => ({})),
-};
+// Hoisted mock instances — survives vi.resetModules()
+const mockSettingsManager = vi.hoisted(() => ({
+  getDefaultThinkingLevel: vi.fn(),
+  getThinkingBudgets: vi.fn(),
+  getProjectSettings: vi.fn(),
+  getGlobalSettings: vi.fn(),
+}));
 
-vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
-  return {
-    ...actual,
-    SettingsManager: {
-      create: () => mockSettingsManager,
-    },
-  };
-});
-
-let EventManager: typeof import("../src/managers/events").EventManager;
-
-beforeAll(async () => {
-  const mod = await vi.importActual("../src/managers/events");
-  EventManager =
-    mod.EventManager as typeof import("../src/managers/events").EventManager;
-});
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: vi.fn().mockReturnValue("/fake/agent/dir"),
+  readStoredCredential: vi.fn(),
+  SettingsManager: {
+    create: vi.fn().mockReturnValue(mockSettingsManager),
+  },
+}));
 
 beforeEach(() => {
-  vi.restoreAllMocks();
-  EventManager.resetInflightModel();
-  SamplingState.clear();
+  vi.clearAllMocks();
   mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("medium");
   mockSettingsManager.getThinkingBudgets.mockReturnValue(undefined);
   mockSettingsManager.getProjectSettings.mockReturnValue({});
   mockSettingsManager.getGlobalSettings.mockReturnValue({});
+  SamplingState.clear();
 });
 
-const createPayload = (modelId: string) => ({
-  model: modelId,
+/** Builds a minimal extension context with a current model. */
+const createCtx = (
+  model?: { id: string; provider: string },
+  thinkingLevel?: ModelThinkingLevel,
+): ExtensionContext =>
+  ({ model, thinkingLevel }) as unknown as ExtensionContext;
+
+const llamaCtx = (modelId: string, thinkingLevel?: ModelThinkingLevel) =>
+  createCtx({ id: modelId, provider: LLAMA_PROVIDER_ID }, thinkingLevel);
+
+const createPayload = (extra: Record<string, unknown> = {}) => ({
   messages: [{ role: "user", content: "hello" }],
+  ...extra,
 });
 
-const createNonLlamaPayload = () => ({
-  model: "gpt-4",
-  messages: [{ role: "user", content: "hello" }],
-});
+/** Runs a before_provider_request through a fresh EventManager. */
+const runRequest = async (
+  payload: Record<string, unknown>,
+  ctx: ExtensionContext,
+) => {
+  const eventManager = new EventManager(new ConfigResolver());
+  return (await eventManager.onBeforeProviderRequest(
+    { payload } as any,
+    ctx,
+  )) as Record<string, unknown>;
+};
 
 describe("EventManager.onBeforeProviderRequest", () => {
   describe("normal usage — each thinking level", () => {
-    it.each([
+    const cases: { level: ModelThinkingLevel; expected: Record<string, unknown> }[] = [
       {
         level: "off",
         expected: { chat_template_kwargs: { enable_thinking: false } },
@@ -63,46 +71,23 @@ describe("EventManager.onBeforeProviderRequest", () => {
       { level: "high", expected: { thinking_budget_tokens: 16384 } },
       { level: "xhigh", expected: { thinking_budget_tokens: 32768 } },
       { level: "max", expected: {} },
-    ])(
+    ];
+
+    it.each(cases)(
       'level "$level" should return $expected',
       async ({ level, expected }) => {
-        mockSettingsManager.getDefaultThinkingLevel.mockReturnValue(level);
+        const result = await runRequest(createPayload(), llamaCtx("m", level));
 
-        const server = createMockServer({
-          models: ["model-a"].map((id) => createMockModel(id)),
-        });
-        const eventManager = new EventManager([server]);
-        const event = { payload: createPayload("model-a") };
-
-        const result = (await eventManager.onBeforeProviderRequest(
-          event as any,
-        )) as Record<string, unknown>;
-
-        expect(result.model).toBe("model-a");
         expect(result).toMatchObject(expected);
       },
     );
 
     it("should preserve original payload fields alongside new ones", async () => {
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+      const payload = createPayload({ temperature: 0.7 });
 
-      const server = createMockServer({
-        models: ["model-b"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = {
-        payload: {
-          model: "model-b",
-          messages: [{ role: "user", content: "test" }],
-          temperature: 0.7,
-        },
-      };
+      const result = await runRequest(payload, llamaCtx("m", "low"));
 
-      const result = (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
-
-      expect(result.messages).toEqual([{ role: "user", content: "test" }]);
+      expect(result.messages).toEqual([{ role: "user", content: "hello" }]);
       expect(result.temperature).toBe(0.7);
       expect(result.thinking_budget_tokens).toBe(
         DEFAULT_THINKING_LEVELS.low.budget,
@@ -110,65 +95,70 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
   });
 
-  describe("non-llama.cpp models", () => {
-    it("should return the payload unchanged for unknown models", async () => {
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createNonLlamaPayload() };
+  describe("provider gating", () => {
+    it("should return the payload unchanged for non-llama.cpp providers", async () => {
+      const payload = createPayload();
+      const ctx = createCtx({ id: "gpt-4", provider: "openai" }, "medium");
 
-      const result = await eventManager.onBeforeProviderRequest(event as any);
+      const result = await runRequest(payload, ctx);
 
-      expect(result).toEqual(createNonLlamaPayload());
+      expect(result).toBe(payload);
+    });
+
+    it("should return the payload unchanged when no model is set", async () => {
+      const payload = createPayload();
+
+      const result = await runRequest(payload, createCtx(undefined));
+
+      expect(result).toBe(payload);
     });
   });
 
-  describe("missing model in payload", () => {
-    it("should return the payload unchanged when model is absent", async () => {
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: { messages: [] } };
+  describe("thinking level resolution", () => {
+    it("should prefer the session thinking level over the configured default", async () => {
+      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
 
-      const result = await eventManager.onBeforeProviderRequest(event as any);
+      const result = await runRequest(createPayload(), llamaCtx("m", "high"));
 
-      expect(result).toEqual({ messages: [] });
+      expect(result.thinking_budget_tokens).toBe(
+        DEFAULT_THINKING_LEVELS.high.budget,
+      );
+    });
+
+    it("should fall back to the configured default when the session level is unset", async () => {
+      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+
+      const result = await runRequest(createPayload(), llamaCtx("m"));
+
+      expect(result.thinking_budget_tokens).toBe(
+        DEFAULT_THINKING_LEVELS.low.budget,
+      );
+    });
+
+    it("should fall back to medium when neither session nor default is set", async () => {
+      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue(undefined);
+
+      const result = await runRequest(createPayload(), llamaCtx("m"));
+
+      expect(result.thinking_budget_tokens).toBe(
+        DEFAULT_THINKING_LEVELS.medium.budget,
+      );
     });
   });
 
   describe("user-defined budget overrides", () => {
     it("should use user-defined budgets instead of defaults", async () => {
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
       mockSettingsManager.getThinkingBudgets.mockReturnValue({ low: 4096 });
 
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createPayload("model-a") };
-
-      const result = (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
+      const result = await runRequest(createPayload(), llamaCtx("m", "low"));
 
       expect(result.thinking_budget_tokens).toBe(4096);
     });
 
     it("should merge user budgets with defaults (partial override)", async () => {
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("medium");
       mockSettingsManager.getThinkingBudgets.mockReturnValue({ low: 4096 });
 
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createPayload("model-a") };
-
-      const result = (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
+      const result = await runRequest(createPayload(), llamaCtx("m", "medium"));
 
       // medium uses default since user only overrode low
       expect(result.thinking_budget_tokens).toBe(
@@ -181,43 +171,24 @@ describe("EventManager.onBeforeProviderRequest", () => {
 
   describe("edge cases", () => {
     it("should ignore invalid keys in user budgets (they are silently dropped)", async () => {
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("medium");
       mockSettingsManager.getThinkingBudgets.mockReturnValue({
         foo: 999,
         bar: 123,
       } as any);
 
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createPayload("model-a") };
+      const result = await runRequest(createPayload(), llamaCtx("m", "medium"));
 
-      const result = (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
-
-      // Should fall back to default since "medium" is not in user budgets
       expect(result.thinking_budget_tokens).toBe(
         DEFAULT_THINKING_LEVELS.medium.budget,
       );
     });
 
     it("should not allow overriding 'off' — thinking stays disabled", async () => {
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("off");
       mockSettingsManager.getThinkingBudgets.mockReturnValue({
         off: 99999,
       } as any);
 
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createPayload("model-a") };
-
-      const result = (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
+      const result = await runRequest(createPayload(), llamaCtx("m", "off"));
 
       expect(result).toMatchObject({
         chat_template_kwargs: { enable_thinking: false },
@@ -226,22 +197,14 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
 
     it("should not apply thinkingBudgets overrides to 'max' (stays unbounded)", async () => {
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("max");
       mockSettingsManager.getThinkingBudgets.mockReturnValue({
         max: 50000,
       } as any);
 
-      const server = createMockServer({
-        models: ["model-a"].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createPayload("model-a") };
+      const payload = createPayload();
+      const result = await runRequest(payload, llamaCtx("m", "max"));
 
-      const result = (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
-
-      expect(result).toEqual(createPayload("model-a"));
+      expect(result).toEqual(payload);
       expect(result).not.toHaveProperty("thinking_budget_tokens");
     });
   });
@@ -258,28 +221,15 @@ describe("EventManager.onBeforeProviderRequest", () => {
       xhigh: { effort: "xhigh" },
     };
 
-    const setLlamaThinking = (entries: Record<string, unknown>) =>
+    const setLlamaModelsConfig = (entries: Record<string, unknown>) =>
       mockSettingsManager.getProjectSettings.mockReturnValue({
         llamaModelsConfig: entries,
       });
 
-    const runRequest = async (modelId: string) => {
-      const server = createMockServer({
-        models: [modelId].map((id) => createMockModel(id)),
-      });
-      const eventManager = new EventManager([server]);
-      const event = { payload: createPayload(modelId) };
-
-      return (await eventManager.onBeforeProviderRequest(
-        event as any,
-      )) as Record<string, unknown>;
-    };
-
     it("should inject both effort and budget when both are set", async () => {
-      setLlamaThinking({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("minimal");
+      setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest("qwen3.5-27b");
+      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "minimal"));
 
       expect(result).toMatchObject({
         thinking_budget_tokens: 1024,
@@ -288,10 +238,9 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
 
     it("should inject only the effort when no budget is set (unbounded)", async () => {
-      setLlamaThinking({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("xhigh");
+      setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest("qwen3.5-27b");
+      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "xhigh"));
 
       expect(result).toMatchObject({
         chat_template_kwargs: { reasoning_effort: "xhigh" },
@@ -300,10 +249,9 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
 
     it("should inject the off kwargs when configured for the off level", async () => {
-      setLlamaThinking({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("off");
+      setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest("qwen3.5-27b");
+      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "off"));
 
       expect(result).toMatchObject({
         chat_template_kwargs: {
@@ -315,7 +263,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
 
     it("should support off with both the kwargs and a budget of 0", async () => {
-      setLlamaThinking({
+      setLlamaModelsConfig({
         "*": {
           thinkingLevelMap: {
             off: {
@@ -326,9 +274,8 @@ describe("EventManager.onBeforeProviderRequest", () => {
           },
         },
       });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("off");
 
-      const result = await runRequest("m");
+      const result = await runRequest(createPayload(), llamaCtx("m", "off"));
 
       expect(result).toMatchObject({
         thinking_budget_tokens: 0,
@@ -340,30 +287,68 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
 
     it("should leave the payload untouched for hole levels (absent keys)", async () => {
-      setLlamaThinking({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("max");
+      setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest("qwen3.5-27b");
+      const payload = createPayload();
+      const result = await runRequest(payload, llamaCtx("qwen3.5-27b", "max"));
 
-      expect(result).toEqual(createPayload("qwen3.5-27b"));
+      expect(result).toEqual(payload);
     });
 
     it("should leave the payload untouched for explicit null levels", async () => {
-      setLlamaThinking({ "*": { thinkingLevelMap: { low: null } } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+      setLlamaModelsConfig({ "*": { thinkingLevelMap: { low: null } } });
 
-      const result = await runRequest("m");
+      const payload = createPayload();
+      const result = await runRequest(payload, llamaCtx("m", "low"));
 
-      expect(result).toEqual(createPayload("m"));
+      expect(result).toEqual(payload);
     });
 
     it("should leave the payload untouched for empty-object levels", async () => {
-      setLlamaThinking({ "*": { thinkingLevelMap: { low: {} } } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+      setLlamaModelsConfig({ "*": { thinkingLevelMap: { low: {} } } });
 
-      const result = await runRequest("m");
+      const payload = createPayload();
+      const result = await runRequest(payload, llamaCtx("m", "low"));
 
-      expect(result).toEqual(createPayload("m"));
+      expect(result).toEqual(payload);
+    });
+
+    it("should use budget-only entries for budget models (e.g. qwen3.6)", async () => {
+      setLlamaModelsConfig({
+        "qwen3.6*": {
+          thinkingLevelMap: {
+            off: { enable_thinking: false, preserve_thinking: false },
+            low: { budget: 2048 },
+            medium: { budget: 8192 },
+          },
+        },
+      });
+
+      const result = await runRequest(createPayload(), llamaCtx("qwen3.6-27b", "low"));
+
+      expect(result).toMatchObject({ thinking_budget_tokens: 2048 });
+      expect(result).not.toHaveProperty("chat_template_kwargs");
+    });
+
+    it("should fall back to the historical budget behavior when no pattern matches", async () => {
+      setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
+
+      const result = await runRequest(createPayload(), llamaCtx("some-other-model", "high"));
+
+      expect(result.thinking_budget_tokens).toBe(
+        DEFAULT_THINKING_LEVELS.high.budget,
+      );
+    });
+
+    it("should prefer the most specific matching pattern", async () => {
+      setLlamaModelsConfig({
+        "*": { thinkingLevelMap: { low: { budget: 1 } } },
+        "qwen3.5*": { thinkingLevelMap: { low: { budget: 2 } } },
+      });
+
+      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "low"));
+
+      expect(result.thinking_budget_tokens).toBe(2);
     });
 
     describe("sampling set injection", () => {
@@ -371,18 +356,6 @@ describe("EventManager.onBeforeProviderRequest", () => {
         mockSettingsManager.getProjectSettings.mockReturnValue({
           llamaModelsConfig: entries,
         });
-
-      const runRequest = async (modelId: string) => {
-        const server = createMockServer({
-          models: [modelId].map((id) => createMockModel(id)),
-        });
-        const eventManager = new EventManager([server]);
-        const event = { payload: createPayload(modelId) };
-
-        return (await eventManager.onBeforeProviderRequest(
-          event as any,
-        )) as Record<string, unknown>;
-      };
 
       it("should inject the selected set's parameters top-level", async () => {
         setSamplingConfig({
@@ -398,7 +371,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
         });
         SamplingState.set("m", "thinking");
 
-        const result = await runRequest("m");
+        const result = await runRequest(createPayload(), llamaCtx("m"));
 
         expect(result).toMatchObject({
           temperature: 1.0,
@@ -415,9 +388,8 @@ describe("EventManager.onBeforeProviderRequest", () => {
           },
         });
         SamplingState.set("m", "instruct");
-        mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
 
-        const result = await runRequest("m");
+        const result = await runRequest(createPayload(), llamaCtx("m", "low"));
 
         expect(result).toMatchObject({
           thinking_budget_tokens: 8192,
@@ -425,35 +397,28 @@ describe("EventManager.onBeforeProviderRequest", () => {
         });
       });
 
-      // With no sampling set active, only the default thinking budget applies
-      const UNCHANGED_BY_SAMPLING = {
-        ...createPayload("m"),
-        thinking_budget_tokens: DEFAULT_THINKING_LEVELS.medium.budget,
-      };
-
       it("should inject nothing when no set is selected", async () => {
         setSamplingConfig({
-          "*": {
-            samplingMap: { thinking: { temperature: 1.0 } },
-          },
+          "*": { samplingMap: { thinking: { temperature: 1.0 } } },
         });
 
-        const result = await runRequest("m");
+        const result = await runRequest(createPayload(), llamaCtx("m"));
 
-        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+        expect(result).toEqual({
+          ...createPayload(),
+          thinking_budget_tokens: DEFAULT_THINKING_LEVELS.medium.budget,
+        });
       });
 
       it("should not leak a selection from another model", async () => {
         setSamplingConfig({
-          "*": {
-            samplingMap: { thinking: { temperature: 1.0 } },
-          },
+          "*": { samplingMap: { thinking: { temperature: 1.0 } } },
         });
         SamplingState.set("other-model", "thinking");
 
-        const result = await runRequest("m");
+        const result = await runRequest(createPayload(), llamaCtx("m"));
 
-        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+        expect(result).not.toHaveProperty("temperature");
       });
 
       it("should ignore a selected set that no longer exists for the model", async () => {
@@ -462,59 +427,60 @@ describe("EventManager.onBeforeProviderRequest", () => {
         });
         SamplingState.set("m", "thinking");
 
-        const result = await runRequest("m");
+        const result = await runRequest(createPayload(), llamaCtx("m"));
 
-        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+        expect(result).not.toHaveProperty("temperature");
       });
 
       it("should inject nothing for models without a samplingMap", async () => {
         SamplingState.set("m", "thinking");
 
-        const result = await runRequest("m");
+        const result = await runRequest(createPayload(), llamaCtx("m"));
 
-        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+        expect(result).not.toHaveProperty("temperature");
       });
     });
+  });
+});
 
-    it("should use budget-only entries for budget models (e.g. qwen3.6)", async () => {
-      setLlamaThinking({
-        "qwen3.6*": {
-          thinkingLevelMap: {
-            off: { enable_thinking: false, preserve_thinking: false },
-            low: { budget: 2048 },
-            medium: { budget: 8192 },
-          },
-        },
-      });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+describe("EventManager.onModelSelect", () => {
+  it("should restore the sampling status for llama.cpp models", () => {
+    const setStatus = vi.fn();
+    const ctx = createCtx({ id: "m", provider: LLAMA_PROVIDER_ID });
+    (ctx as any).ui = { setStatus };
+    SamplingState.set("m", "thinking");
 
-      const result = await runRequest("qwen3.6-27b");
+    new EventManager(new ConfigResolver()).onModelSelect(
+      { model: { id: "m", provider: LLAMA_PROVIDER_ID } },
+      ctx,
+    );
 
-      expect(result).toMatchObject({ thinking_budget_tokens: 2048 });
-      expect(result).not.toHaveProperty("chat_template_kwargs");
-    });
+    expect(setStatus).toHaveBeenCalledWith("Llama.cpp", "sampling: thinking");
+  });
 
-    it("should fall back to the historical budget behavior when no pattern matches", async () => {
-      setLlamaThinking({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("high");
+  it("should clear the status when no set is selected", () => {
+    const setStatus = vi.fn();
+    const ctx = createCtx({ id: "m", provider: LLAMA_PROVIDER_ID });
+    (ctx as any).ui = { setStatus };
 
-      const result = await runRequest("some-other-model");
+    new EventManager(new ConfigResolver()).onModelSelect(
+      { model: { id: "m", provider: LLAMA_PROVIDER_ID } },
+      ctx,
+    );
 
-      expect(result.thinking_budget_tokens).toBe(
-        DEFAULT_THINKING_LEVELS.high.budget,
-      );
-    });
+    expect(setStatus).toHaveBeenCalledWith("Llama.cpp", undefined);
+  });
 
-    it("should prefer the most specific matching pattern", async () => {
-      setLlamaThinking({
-        "*": { thinkingLevelMap: { low: { budget: 1 } } },
-        "qwen3.5*": { thinkingLevelMap: { low: { budget: 2 } } },
-      });
-      mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+  it("should ignore non-llama.cpp models", () => {
+    const setStatus = vi.fn();
+    const ctx = createCtx({ id: "gpt-4", provider: "openai" });
+    (ctx as any).ui = { setStatus };
 
-      const result = await runRequest("qwen3.5-27b");
+    new EventManager(new ConfigResolver()).onModelSelect(
+      { model: { id: "gpt-4", provider: "openai" } },
+      ctx,
+    );
 
-      expect(result.thinking_budget_tokens).toBe(2);
-    });
+    expect(setStatus).not.toHaveBeenCalled();
   });
 });

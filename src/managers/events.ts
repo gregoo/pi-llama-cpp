@@ -1,130 +1,111 @@
-import {
-  type BeforeProviderRequestEvent,
-  type ExtensionContext,
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+  BeforeProviderRequestEvent,
+  ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { READABLE_TIMEOUT } from "../constants";
-import { ModelSelectEvent } from "../interfaces/events";
-import { BaseModel } from "../models/baseModel";
+import { LLAMA_PROVIDER_ID } from "../constants";
+import type { ModelSelectEvent } from "../interfaces/events";
 import { ConfigResolver } from "../resolver";
-import { Server } from "../server";
 import { SamplingState, updateSamplingStatus } from "./sampling";
 
+/**
+ * Event manager: injects thinking and sampling parameters into outgoing
+ * requests for the built-in llama.cpp provider.
+ *
+ * Isolation: all behavior is gated on `ctx.model.provider === "llama.cpp"`,
+ * so other OpenAI-compatible providers are never touched.
+ */
 export class EventManager {
-  static inflightModel: BaseModel | null = null;
-
-  constructor(private readonly servers: Server[]) {}
+  constructor(private readonly resolver: ConfigResolver) {}
 
   /**
-   * Resets the in-flight model reference.
-   */
-  static resetInflightModel() {
-    EventManager.inflightModel = null;
-  }
-
-  /**
-   * Reacts to a new model event triggered by Pi
+   * Restores the footer status for the selected model's sampling selection.
    *
    * @param event Model selection event
    * @param ctx Pi context
    */
-  async onModelSelect(event: ModelSelectEvent, ctx: ExtensionContext) {
-    for (const { providerId, models } of this.servers) {
-      if (event.model.provider !== providerId) continue;
+  onModelSelect(event: ModelSelectEvent, ctx: ExtensionContext): void {
+    if (event.model.provider !== LLAMA_PROVIDER_ID) return;
 
-      const model = models.find((m) => m.id === event.model.id);
-      if (!model) continue;
-
-      // Restore the footer status for this model's sampling selection
-      updateSamplingStatus(ctx, model.id);
-
-      ctx.ui.notify(`Loading ${model.name}...`, "info");
-      await model
-        .load()
-        .then(() => ctx.ui.notify(`Model ${model.name} ready`, "info"))
-        .catch(() =>
-          ctx.ui.notify(`Failed to load model ${model.name}`, "error"),
-        );
-      return;
-    }
+    updateSamplingStatus(ctx, event.model.id);
   }
 
   /**
-   * Session-switch handler. Registered once at extension init.
-   * Only notifies if a model load is actually in-flight.
+   * Intercepts the request to add extra information useful to llama.cpp.
    *
-   * @param ctx Pi context
-   */
-  async onSessionBeforeSwitch(ctx: ExtensionContext) {
-    if (!EventManager.inflightModel) return;
-
-    const messages = [
-      `Session change detected while model '${EventManager.inflightModel.name}' was still loading.`,
-      "Model load will continue in the background, but UI might not update.",
-      "",
-      "Verify that your new model is loaded, or use /models to re-select it afterwards.",
-    ];
-    ctx.ui.notify(messages.join("\n"), "warning");
-
-    // Show the notification for a reasonable amount of time
-    await new Promise((r) => setTimeout(r, READABLE_TIMEOUT));
-  }
-
-  /**
-   * Intercepts the request to add extra information, useful to llama.cpp.
    * Resolves the per-level thinking spec for this model (from the
-   * `llamaThinking` setting, or the global default map when no pattern
+   * `llamaModelsConfig` setting, or the global default map when no pattern
    * matches) and injects whatever fields the selected level's spec defines:
-   * `thinking_budget_tokens` and/or `chat_template_kwargs`.
+   * `thinking_budget_tokens` and/or `chat_template_kwargs`. Also injects the
+   * selected named sampling set's parameters, if any.
+   *
+   * The current thinking level comes from the session runtime when
+   * available (`ctx.thinkingLevel`), falling back to the configured default.
    *
    * @param event Request event
+   * @param ctx Pi context
    * @returns Updated payload
    */
-  async onBeforeProviderRequest(event: BeforeProviderRequestEvent) {
-    const payload = event.payload as { model?: string };
-    const { model } = payload;
-    if (!model) return payload;
+  async onBeforeProviderRequest(
+    event: BeforeProviderRequestEvent,
+    ctx: ExtensionContext,
+  ) {
+    const payload = event.payload as Record<string, unknown>;
 
-    // Check if this model belongs to one of our servers
-    const isLlamaCpp = this.servers.some((s) =>
-      s.models.some((m) => m.id === model),
-    );
+    const model = ctx.model;
+    if (!model || model.provider !== LLAMA_PROVIDER_ID) return payload;
 
-    if (!isLlamaCpp) return payload;
+    try {
+      this.applyThinking(payload, model.id, ctx);
+      this.applySampling(payload, model.id);
+    } catch (error) {
+      console.error("[pi-llama-cpp] Failed to configure request:", error);
+    }
 
-    // Resolve pi's current thinking level and this model's specs
-    const resolver = new ConfigResolver();
+    return payload;
+  }
 
-    const additions: Record<string, unknown> = {};
-
-    // Thinking: inject whatever the selected level's spec defines
-    const levels = resolver.resolveThinkingLevels(model);
-    const level = resolver.resolveThinkingLevel() ?? "medium";
+  /**
+   * Injects the thinking parameters defined by the current level's spec.
+   */
+  private applyThinking(
+    payload: Record<string, unknown>,
+    modelId: string,
+    ctx: ExtensionContext,
+  ): void {
+    const level = (ctx.thinkingLevel ??
+      this.resolver.resolveThinkingLevel() ??
+      "medium") as ModelThinkingLevel;
 
     // Unavailable levels add nothing (Pi should clamp away, defensive)
-    const spec = levels[level];
-    if (spec !== null) {
-      if (spec.budget !== undefined)
-        additions.thinking_budget_tokens = spec.budget;
+    const spec = this.resolver.resolveThinkingLevels(modelId)[level];
+    if (spec === null) return;
 
-      const kwargs: Record<string, unknown> = {};
-      if (spec.effort !== undefined) kwargs.reasoning_effort = spec.effort;
-      if (spec.enable_thinking !== undefined)
-        kwargs.enable_thinking = spec.enable_thinking;
-      if (spec.preserve_thinking !== undefined)
-        kwargs.preserve_thinking = spec.preserve_thinking;
-      if (Object.keys(kwargs).length > 0)
-        additions.chat_template_kwargs = kwargs;
-    }
+    if (spec.budget !== undefined) payload.thinking_budget_tokens = spec.budget;
 
-    // Sampling: inject the selected named set's parameters, if any
-    const setName = SamplingState.get(model);
-    if (setName !== undefined) {
-      const params = resolver.resolveSamplingMap(model)?.[setName];
-      if (params) Object.assign(additions, params);
-    }
+    const kwargs: Record<string, unknown> = {};
+    if (spec.effort !== undefined) kwargs.reasoning_effort = spec.effort;
+    if (spec.enable_thinking !== undefined)
+      kwargs.enable_thinking = spec.enable_thinking;
+    if (spec.preserve_thinking !== undefined)
+      kwargs.preserve_thinking = spec.preserve_thinking;
 
-    return Object.keys(additions).length > 0
-      ? { ...payload, ...additions }
-      : payload;
+    if (Object.keys(kwargs).length > 0) payload.chat_template_kwargs = kwargs;
+  }
+
+  /**
+   * Injects the selected named sampling set's parameters, if any.
+   */
+  private applySampling(
+    payload: Record<string, unknown>,
+    modelId: string,
+  ): void {
+    const setName = SamplingState.get(modelId);
+    if (setName === undefined) return;
+
+    const params = this.resolver.resolveSamplingMap(modelId)?.[setName];
+    if (!params) return;
+
+    for (const [key, value] of Object.entries(params)) payload[key] = value;
   }
 }
