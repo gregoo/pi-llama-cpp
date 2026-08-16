@@ -24,18 +24,12 @@ Everything else — server connection, authentication, model loading/unloading, 
 This package is a Pi extension. Install it with
 
 ```bash
-pi install npm:pi-llama-cpp
-```
-
-or
-
-```bash
 pi install https://github.com/gregoo/pi-llama-cpp
 ```
 
 ## Setup
 
-1. **Connect your server** — run `/login llama.cpp` in Pi and set the base URL (e.g. `http://192.168.1.190:8080`). The value is stored as the `LLAMA_BASE_URL` credential for the built-in provider. When a model is loaded, the extension registers it as the provider's default so login selects it automatically instead of complaining that no default model is configured.
+1. **Connect your server** — run `/login llama.cpp` in Pi and set the base URL (e.g. `http://192.168.1.1:8080`). The value is stored as the `LLAMA_BASE_URL` credential for the built-in provider. When a model is loaded, the extension registers it as the provider's default so login selects it automatically instead of complaining that no default model is configured.
 2. **Load models** — run `/llama` to browse your server's model router and load/unload models. Loaded models appear in Pi's model list.
 3. **Pick a model** — use `/model` (or `--provider llama.cpp --model <id>` on the CLI) as usual.
 
