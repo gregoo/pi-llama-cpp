@@ -1,6 +1,11 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 /**
+ * The ID of Pi's built-in llama.cpp provider, which this extension wraps
+ */
+export const LLAMA_PROVIDER_ID = "llama.cpp";
+
+/**
  * This provider's base ID
  */
 export const PROVIDER_PREFIX = "llama-server";
