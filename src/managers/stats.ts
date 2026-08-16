@@ -13,11 +13,28 @@ export interface PromptProgress {
   cache?: number;
 }
 
+/** A llama.cpp `timings` chunk (present on every SSE chunk in recent builds). */
+export interface LlamaTimings {
+  cache_n?: number;
+  prompt_n?: number;
+  prompt_ms?: number;
+  prompt_per_token_ms?: number;
+  prompt_per_second?: number;
+  predicted_n?: number;
+  predicted_ms?: number;
+  predicted_per_token_ms?: number;
+  predicted_per_second?: number;
+  draft_n?: number;
+  draft_n_accepted?: number;
+}
+
 interface FinalStats {
   prefillTokens?: number;
   prefillTps?: number;
+  cached?: number;
   genTokens: number;
   avgTps: number;
+  mtpPct?: number;
 }
 
 const WIDGET_KEY = "llama-stats";
@@ -31,9 +48,12 @@ const MAX_TOKEN_TIMESTAMPS = 50;
  * - **Prefill** — `tapFetch()` wraps the provider's own fetch and reads
  *   `prompt_progress` chunks off the raw SSE body (pi-ai's parser drops
  *   non-standard fields, so no event carries them). Only works when the
- *   server build supports `return_progress`; otherwise this feed is empty.
- * - **Decode** — Pi's `message_update` event fires per token delta; token
- *   timing gives tokens/sec without touching the stream at all.
+ *   server build supports `return_progress`; otherwise the `timings`
+ *   counter in every chunk is used instead.
+ * - **Decode** — server-reported `timings` (`predicted_n`,
+ *   `predicted_per_second`) when present: authoritative under speculative
+ *   decoding, where one SSE chunk can carry several tokens. Pi's
+ *   `message_update` per-delta timing is the fallback for older builds.
  *
  * Display uses the `llama-stats` widget slot, separate from the sampling
  * footer status.
@@ -46,7 +66,10 @@ export class StatsManager {
   private progress: PromptProgress | null = null;
   private hasPrefill = false;
 
-  // Decode state (fed by message_update)
+  // Latest server-reported timings (fed by the stream tap)
+  private timings: LlamaTimings | null = null;
+
+  // Decode state (fed by message_update; fallback when no timings)
   private tokenCount = 0;
   private timestamps: number[] = [];
   private genStart = 0;
@@ -72,6 +95,7 @@ export class StatsManager {
   beginStream(): void {
     this.progress = null;
     this.hasPrefill = false;
+    this.timings = null;
     this.tokenCount = 0;
     this.timestamps = [];
     this.genStart = 0;
@@ -81,10 +105,13 @@ export class StatsManager {
     this.render();
   }
 
-  /** Records a `prompt_progress` chunk from the stream tap. */
-  prefill(progress: PromptProgress): void {
-    this.progress = progress;
-    this.hasPrefill = true;
+  /** Records one tapped SSE chunk (`prompt_progress` and/or `timings`). */
+  onChunk(data: { progress?: PromptProgress; timings?: LlamaTimings }): void {
+    if (data.progress) {
+      this.progress = data.progress;
+      this.hasPrefill = true;
+    }
+    if (data.timings) this.timings = data.timings;
     this.render();
   }
 
@@ -117,28 +144,59 @@ export class StatsManager {
   onMessageEnd(event: MessageEndEvent): void {
     const message = event.message;
     if (messageProvider(message) !== LLAMA_PROVIDER_ID) return;
-    if (!this.generating && !this.hasPrefill) return;
+    if (!this.generating && !this.hasPrefill && !this.timings) return;
 
-    // Prefer the server-reported count; fall back to the delta count.
+    // Token count: server usage > server timings (MTP-accurate) > delta count.
     const genTokens =
       message.role === "assistant" && message.usage.output > 0
         ? message.usage.output
-        : this.tokenCount;
-    const elapsedSec = (Date.now() - this.genStart) / 1000;
-    const avgTps = elapsedSec > 0 ? genTokens / elapsedSec : 0;
+        : this.serverTokens() ?? this.tokenCount;
 
-    const processed = this.progress?.processed ?? 0;
-    const cache = this.progress?.cache ?? 0;
-    const timeMs = this.progress?.time_ms ?? 0;
-    const actualPrefill = processed - cache;
-    const prefillTps =
-      timeMs > 0 && actualPrefill > 0 ? actualPrefill / (timeMs / 1000) : undefined;
+    // Speed: prefer the server's own clock, fall back to local elapsed time.
+    let avgTps: number;
+    const predMs = this.timings?.predicted_ms;
+    if (genTokens === this.serverTokens() && typeof predMs === "number" && predMs > 0) {
+      avgTps = genTokens / (predMs / 1000);
+    } else {
+      const elapsedSec = (Date.now() - this.genStart) / 1000;
+      avgTps = elapsedSec > 0 ? genTokens / elapsedSec : 0;
+    }
+
+    // Prefill: prompt_progress if available, otherwise the final timings.
+    let prefillTokens: number | undefined;
+    let prefillTps: number | undefined;
+    let cached: number | undefined;
+    if (this.hasPrefill && this.progress) {
+      const processed = this.progress.processed ?? 0;
+      cached = this.progress.cache ?? 0;
+      const timeMs = this.progress.time_ms ?? 0;
+      prefillTokens = processed;
+      prefillTps =
+        timeMs > 0 && processed - cached > 0
+          ? (processed - cached) / (timeMs / 1000)
+          : undefined;
+    } else {
+      const t = this.timings;
+      if (t && typeof t.prompt_n === "number") {
+        cached = t.cache_n ?? 0;
+        prefillTokens = t.prompt_n + cached;
+        prefillTps =
+          (t.prompt_ms ?? 0) > 0 && t.prompt_n > 0
+            ? t.prompt_n / ((t.prompt_ms ?? 0) / 1000)
+            : undefined;
+      }
+    }
+
+    const draftN = this.timings?.draft_n ?? 0;
+    const draftAcc = this.timings?.draft_n_accepted ?? 0;
 
     this.finalStats = {
-      prefillTokens: this.hasPrefill ? processed : undefined,
+      prefillTokens,
       prefillTps,
+      cached,
       genTokens,
       avgTps,
+      mtpPct: draftN > 0 ? Math.round((draftAcc / draftN) * 100) : undefined,
     };
     this.generating = false;
     this.toolCalling = false;
@@ -159,10 +217,14 @@ export class StatsManager {
 
       this.beginStream();
       const body = tapSseBody(response.body, (chunk) => {
-        const progress = chunk.prompt_progress;
-        if (progress && typeof progress === "object") {
-          this.prefill(progress as PromptProgress);
+        const data: { progress?: PromptProgress; timings?: LlamaTimings } = {};
+        if (chunk.prompt_progress && typeof chunk.prompt_progress === "object") {
+          data.progress = chunk.prompt_progress as PromptProgress;
         }
+        if (chunk.timings && typeof chunk.timings === "object") {
+          data.timings = chunk.timings as LlamaTimings;
+        }
+        if (data.progress || data.timings) this.onChunk(data);
       });
       return new Response(body, {
         status: response.status,
@@ -172,7 +234,19 @@ export class StatsManager {
     };
   }
 
-  /** Rolling tokens/sec over the last ~10 token arrivals. */
+  /** Server-reported generated token count (authoritative under MTP). */
+  private serverTokens(): number | undefined {
+    const n = this.timings?.predicted_n;
+    return typeof n === "number" && n >= 0 ? n : undefined;
+  }
+
+  /** Server-reported cumulative decode speed. */
+  private serverTps(): number {
+    const t = this.timings?.predicted_per_second;
+    return typeof t === "number" && t > 0 ? t : 0;
+  }
+
+  /** Rolling tokens/sec over the last ~10 token arrivals (fallback). */
   private rollingTps(): number {
     if (this.timestamps.length < 2) return 0;
     const recent = this.timestamps.slice(-10);
@@ -183,7 +257,8 @@ export class StatsManager {
 
   private render(): void {
     if (!this.ui || !this.hasUI) return;
-    const idle = !this.generating && !this.hasPrefill && !this.finalStats;
+    const idle =
+      !this.generating && !this.hasPrefill && !this.finalStats && !this.timings;
     this.ui.setWidget(WIDGET_KEY, idle ? undefined : [this.message()]);
   }
 
@@ -214,30 +289,42 @@ export class StatsManager {
       } else {
         parts.push("📖 Prefilling...");
       }
+    } else if (!this.finalStats && !this.generating && this.timings) {
+      // No prompt_progress support — fall back to the timings counter
+      const fresh = this.timings.prompt_n ?? 0;
+      const cached = this.timings.cache_n ?? 0;
+      parts.push(
+        fresh > 0 || cached > 0
+          ? `📖 ${fresh + cached} tokens prefill`
+          : "📖 Prefilling...",
+      );
     }
 
     // Generation speed (no ETA — output length is unpredictable)
-    if (this.generating && this.tokenCount > 0) {
-      const tps = this.rollingTps();
-      const icon = this.toolCalling ? "🔧" : "✨";
-      parts.push(
-        `${icon} ${tps > 0 ? `${tps.toFixed(1)} tok/s · ` : ""}${this.tokenCount} tokens`,
-      );
+    if (this.generating) {
+      const tokens = this.serverTokens() ?? this.tokenCount;
+      if (tokens > 0) {
+        const tps = this.serverTps() || this.rollingTps();
+        const icon = this.toolCalling ? "🔧" : "✨";
+        parts.push(
+          `${icon} ${tps > 0 ? `${tps.toFixed(1)} tok/s · ` : ""}${tokens} tokens`,
+        );
+      }
     }
 
     // Final stats (persisted until the next generation)
     if (this.finalStats && !this.generating) {
       const final = this.finalStats;
       if (final.prefillTokens !== undefined) {
-        parts.push(
-          `📖 ${
-            final.prefillTps
-              ? `${final.prefillTokens} @ ${final.prefillTps.toFixed(1)} tok/s`
-              : final.prefillTokens
-          }`,
-        );
+        let prefill = `📖 ${final.prefillTokens}`;
+        if ((final.cached ?? 0) > 0) prefill += ` (${final.cached} cached)`;
+        if (final.prefillTps)
+          prefill += ` @ ${final.prefillTps.toFixed(1)} tok/s`;
+        parts.push(prefill);
       }
-      parts.push(`✨ ${final.genTokens} @ ${final.avgTps.toFixed(1)} tok/s`);
+      let decode = `✨ ${final.genTokens} @ ${final.avgTps.toFixed(1)} tok/s`;
+      if (final.mtpPct !== undefined) decode += ` · MTP ${final.mtpPct}%`;
+      parts.push(decode);
     }
 
     return parts.join(" · ") || "Working...";

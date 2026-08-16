@@ -16,7 +16,7 @@ Everything else — server connection, authentication, model loading/unloading, 
 - **Per-model thinking configuration** — wildcard-matched `llamaModelsConfig` entries define exactly which levels each model offers and what each level sends
 - **Additive level specs** — combine `budget`, `effort`, `enable_thinking` and `preserve_thinking` freely on any level
 - **Named sampling sets** — independent of thinking; select per model with `/sampling`, session-only
-- **Generation stats** — real-time tokens/sec during decoding and a prefill progress bar (when your server build supports `return_progress`), in its own widget slot
+- **Generation stats** — real-time tokens/sec during decoding, a prefill progress bar, cache-hit and MTP (speculative decoding) figures, in its own widget slot
 - **Live catalog** — the supercharged metadata is applied to Pi's live model list, so `/model` always shows the right levels for whatever is loaded
 
 ## Installation
@@ -145,9 +145,9 @@ Level names carry no special meaning in either path — the spec dictates what i
 
 While a llama.cpp model generates, the extension shows a status widget with:
 
-- **Prefill** — a progress bar with prefill tokens/sec and an ETA, when your llama.cpp build emits `prompt_progress` events (the extension requests them via `return_progress: true`; older builds simply ignore the flag)
-- **Decode** — rolling tokens/sec and token count as tokens arrive (🔧 while streaming tool calls)
-- **Final line** — prefill and decode totals, kept visible until the next generation
+- **Prefill** — a progress bar with prefill tokens/sec and an ETA when your llama.cpp build emits `prompt_progress` events (the extension requests them via `return_progress: true`). Builds without that support still get a token counter from the per-chunk `timings` field.
+- **Decode** — live token count and tokens/sec (🔧 while streaming tool calls). When the server reports `timings`, its cumulative `predicted_n`/`predicted_per_second` are used — authoritative under speculative decoding, where one SSE chunk can carry several tokens. Otherwise a client-side rolling estimate is shown.
+- **Final line** — prefill and decode totals kept visible until the next generation, e.g. `📖 27591 (27572 cached) @ 29.1 tok/s · ✨ 422 @ 28.1 tok/s · MTP 76%`. The cache figure appears when prompt tokens were served from the KV cache, and the MTP acceptance percentage when the model runs a draft model.
 
 The stats are scoped to the built-in llama.cpp provider: decode speed comes from Pi's `message_update` events, and prefill from a fetch tap on that provider's own stream — no global `fetch` patching, and other providers are never touched.
 

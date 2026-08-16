@@ -134,7 +134,7 @@ describe("StatsManager prefill display", () => {
     stats.attachUi(ctx);
 
     stats.beginStream();
-    stats.prefill({ total: 1000, processed: 250, time_ms: 1000 });
+    stats.onChunk({ progress: { total: 1000, processed: 250, time_ms: 1000 } });
 
     expect(setWidget).toHaveBeenCalledWith(
       "llama-stats",
@@ -154,7 +154,9 @@ describe("StatsManager prefill display", () => {
 
     stats.beginStream();
     // 900 of 1000 are cache: real progress is 100/100 = 100% → done branch
-    stats.prefill({ total: 1000, processed: 1000, time_ms: 500, cache: 900 });
+    stats.onChunk({
+      progress: { total: 1000, processed: 1000, time_ms: 500, cache: 900 },
+    });
 
     const msg = setWidget.mock.calls.at(-1)![1][0] as string;
     expect(msg).toContain("1000 tokens");
@@ -218,7 +220,7 @@ describe("StatsManager final stats", () => {
     now.mockImplementation(() => (t += 10));
 
     stats.beginStream();
-    stats.prefill({ total: 800, processed: 800, time_ms: 400 });
+    stats.onChunk({ progress: { total: 800, processed: 800, time_ms: 400 } });
     for (let i = 0; i < 3; i++) {
       stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
     }
@@ -277,6 +279,97 @@ describe("StatsManager final stats", () => {
   });
 });
 
+describe("StatsManager server timings", () => {
+  it("prefers server-reported token count and speed over delta timing", () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    stats.beginStream();
+    stats.onChunk({
+      timings: { predicted_n: 422, predicted_per_second: 27.5 },
+    });
+    for (let i = 0; i < 3; i++) {
+      stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+    }
+
+    const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+    expect(msg).toContain("422 tokens"); // not the delta count (3)
+    expect(msg).toContain("27.5 tok/s"); // server speed, not rolling
+  });
+
+  it("shows a timings-based prefill counter when prompt_progress is absent", () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    stats.beginStream();
+    stats.onChunk({ timings: { prompt_n: 4097, cache_n: 390 } });
+
+    const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+    expect(msg).toContain("📖 4487 tokens prefill");
+  });
+
+  it("builds the final line from timings when usage is absent, with MTP acceptance", () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    stats.beginStream();
+    stats.onChunk({
+      timings: {
+        prompt_n: 19,
+        cache_n: 27572,
+        prompt_ms: 652.7,
+        predicted_n: 422,
+        predicted_ms: 15000,
+        predicted_per_second: 28.1,
+        draft_n: 336,
+        draft_n_accepted: 255,
+      },
+    });
+    stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+
+    stats.onMessageEnd({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "llama.cpp",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    } as any);
+
+    const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+    expect(msg).toContain("📖 27591 (27572 cached) @ 29.1 tok/s");
+    expect(msg).toContain("✨ 422 @ 28.1 tok/s · MTP 76%");
+  });
+
+  it("extracts both prompt_progress and timings from tapped chunks", async () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    const base = vi.fn(
+      async () =>
+        new Response(
+          sseBody([
+            'data: {"prompt_progress":{"total":100,"processed":50,"time_ms":100},"timings":{"predicted_n":7,"predicted_per_second":3.5}}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+          { status: 200 },
+        ),
+    );
+    await (await stats.tapFetch(base as any)("http://x", {})).text();
+
+    // Timings are captured by the tap; the decode line appears on update
+    stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+    const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+    expect(msg).toContain("50%");
+    expect(msg).toContain("7 tokens");
+    expect(msg).toContain("3.5 tok/s");
+  });
+});
+
 describe("StatsManager lifecycle", () => {
   it("beginStream clears previous generation state", () => {
     const stats = new StatsManager();
@@ -284,7 +377,7 @@ describe("StatsManager lifecycle", () => {
     stats.attachUi(ctx);
 
     stats.beginStream();
-    stats.prefill({ total: 10, processed: 5 });
+    stats.onChunk({ progress: { total: 10, processed: 5 } });
     expect(setWidget).toHaveBeenCalledTimes(2);
 
     stats.beginStream();
@@ -298,7 +391,7 @@ describe("StatsManager lifecycle", () => {
 
     expect(() => {
       stats.beginStream();
-      stats.prefill({ total: 10, processed: 5 });
+      stats.onChunk({ progress: { total: 10, processed: 5 } });
     }).not.toThrow();
   });
 });
