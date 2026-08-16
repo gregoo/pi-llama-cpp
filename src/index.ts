@@ -64,9 +64,9 @@ export default async function (pi: ExtensionAPI) {
     pi.setThinkingLevel(intended as ThinkingLevel);
   });
 
-  // Single global /models command (sampling selection for the current model)
-  pi.registerCommand("models", {
-    description: `Configure ${PROVIDER_NAME} sampling for the current model`,
+  // /sampling — select the sampling set injected for the current model
+  pi.registerCommand("sampling", {
+    description: `Select the ${PROVIDER_NAME} sampling set for the current model`,
     getArgumentCompletions: commandManager.getArgumentCompletions,
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       await commandManager.handleCommand(args, ctx, pi);

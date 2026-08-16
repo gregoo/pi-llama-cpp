@@ -70,22 +70,22 @@ describe("CommandManager", () => {
   });
 
   describe("getArgumentCompletions", () => {
-    it("should provide completions for /models", () => {
+    it("should provide the static keywords for /sampling", () => {
       const items = commandManager.getArgumentCompletions("");
 
       expect(items).toEqual([
         {
-          value: "sampling",
-          label: "sampling",
-          description: "Select the sampling set for the current model",
+          value: "none",
+          label: "none",
+          description: "Clear the selection (use server/model defaults)",
         },
       ]);
     });
 
     it("should filter completions by prefix", () => {
-      const items = commandManager.getArgumentCompletions("sam");
+      const items = commandManager.getArgumentCompletions("no");
 
-      expect(items?.[0].value).toBe("sampling");
+      expect(items?.[0].value).toBe("none");
     });
 
     it("should return null when no completions match", () => {
@@ -93,11 +93,11 @@ describe("CommandManager", () => {
     });
   });
 
-  describe("handleCommand 'sampling'", () => {
+  describe("handleCommand", () => {
     it("should warn when the current model is not a llama.cpp model", async () => {
       const ctx = createCtx({ id: "gpt-4", provider: "openai" });
 
-      await commandManager.handleCommand("sampling thinking", ctx, {} as any);
+      await commandManager.handleCommand("thinking", ctx, {} as any);
 
       expect(ctx.ui.notify).toHaveBeenCalledWith(
         expect.stringContaining("only apply to"),
@@ -108,7 +108,7 @@ describe("CommandManager", () => {
     it("should warn when there is no current model", async () => {
       const ctx = createCtx();
 
-      await commandManager.handleCommand("sampling thinking", ctx, {} as any);
+      await commandManager.handleCommand("thinking", ctx, {} as any);
 
       expect(ctx.ui.notify).toHaveBeenCalledWith(
         expect.stringContaining("only apply to"),
@@ -120,7 +120,7 @@ describe("CommandManager", () => {
       mockSettingsManager.getGlobalSettings.mockReturnValue({});
       const ctx = createCtx(llamaModel("m"));
 
-      await commandManager.handleCommand("sampling thinking", ctx, {} as any);
+      await commandManager.handleCommand("thinking", ctx, {} as any);
 
       expect(ctx.ui.notify).toHaveBeenCalledWith(
         expect.stringContaining("No sampling sets defined"),
@@ -131,7 +131,7 @@ describe("CommandManager", () => {
     it("should select a set by name and update the status", async () => {
       const ctx = createCtx(llamaModel("m"));
 
-      await commandManager.handleCommand("sampling thinking", ctx, {} as any);
+      await commandManager.handleCommand("thinking", ctx, {} as any);
 
       expect(SamplingState.get("m")).toBe("thinking");
       expect(ctx.ui.setStatus).toHaveBeenCalledWith(
@@ -144,11 +144,11 @@ describe("CommandManager", () => {
       );
     });
 
-    it("should treat a bare 'sampling' argument as the picker", async () => {
+    it("should treat no argument as the picker", async () => {
       const ctx = createCtx(llamaModel("m"));
       ctx.ui.select.mockResolvedValue("instruct");
 
-      await commandManager.handleCommand("sampling", ctx, {} as any);
+      await commandManager.handleCommand("", ctx, {} as any);
 
       expect(ctx.ui.select).toHaveBeenCalledWith(
         expect.stringContaining("sampling sets"),
@@ -157,21 +157,11 @@ describe("CommandManager", () => {
       expect(SamplingState.get("m")).toBe("instruct");
     });
 
-    it("should treat no argument as the picker", async () => {
-      const ctx = createCtx(llamaModel("m"));
-      ctx.ui.select.mockResolvedValue("thinking");
-
-      await commandManager.handleCommand("", ctx, {} as any);
-
-      expect(ctx.ui.select).toHaveBeenCalled();
-      expect(SamplingState.get("m")).toBe("thinking");
-    });
-
     it("should clear the selection with 'none' and update the status", async () => {
       SamplingState.set("m", "thinking");
       const ctx = createCtx(llamaModel("m"));
 
-      await commandManager.handleCommand("sampling none", ctx, {} as any);
+      await commandManager.handleCommand("none", ctx, {} as any);
 
       expect(SamplingState.get("m")).toBeUndefined();
       expect(ctx.ui.setStatus).toHaveBeenCalledWith("Llama.cpp", undefined);
@@ -180,7 +170,7 @@ describe("CommandManager", () => {
     it("should error on an unknown set name", async () => {
       const ctx = createCtx(llamaModel("m"));
 
-      await commandManager.handleCommand("sampling bogus", ctx, {} as any);
+      await commandManager.handleCommand("bogus", ctx, {} as any);
 
       expect(SamplingState.get("m")).toBeUndefined();
       expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -193,7 +183,7 @@ describe("CommandManager", () => {
       const ctx = createCtx(llamaModel("m"));
       ctx.ui.select.mockResolvedValue(null);
 
-      await commandManager.handleCommand("sampling", ctx, {} as any);
+      await commandManager.handleCommand("", ctx, {} as any);
 
       expect(SamplingState.get("m")).toBeUndefined();
     });

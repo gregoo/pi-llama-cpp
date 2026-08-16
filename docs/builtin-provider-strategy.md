@@ -210,8 +210,9 @@ spike).
 3. **Injection cutover — DONE.** Thinking/sampling injection gated on
    `provider === "llama.cpp"`; level from `ctx.thinkingLevel` (session
    runtime) with settings/medium fallback; old server stack deleted
-   (`Server`, `ServerManager`, models, SSE load-wait, `/models` menu →
-   sampling-only command). Live-verified: `--thinking off|low` and the
+   (`Server`, `ServerManager`, models, SSE load-wait, model menu removed;
+   sampling selection moved to a top-level `/sampling` command).
+   Live-verified: `--thinking off|low` and the
    default chain all inject the right spec (mock router + payload capture),
    including the pre-wrap level-restore fix above.
 4. **Stats — DONE.** `src/managers/stats.ts`: decode tok/s from
@@ -222,4 +223,4 @@ spike).
    `prompt_progress`; standalone `stats/` extension deleted.
 5. **Docs/README — DONE.** README rewritten around the built-in provider:
    setup via `/login llama.cpp` + `/llama`, `llamaModelsConfig` reference,
-   sampling sets, sampling-only `/models` command.
+   sampling sets, top-level `/sampling` command.

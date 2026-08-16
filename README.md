@@ -15,7 +15,7 @@ Everything else — server connection, authentication, model loading/unloading, 
 
 - **Per-model thinking configuration** — wildcard-matched `llamaModelsConfig` entries define exactly which levels each model offers and what each level sends
 - **Additive level specs** — combine `budget`, `effort`, `enable_thinking` and `preserve_thinking` freely on any level
-- **Named sampling sets** — independent of thinking; select per model with `/models sampling`, session-only
+- **Named sampling sets** — independent of thinking; select per model with `/sampling`, session-only
 - **Generation stats** — real-time tokens/sec during decoding and a prefill progress bar (when your server build supports `return_progress`), in its own widget slot
 - **Live catalog** — the supercharged metadata is applied to Pi's live model list, so `/model` always shows the right levels for whatever is loaded
 
@@ -41,12 +41,11 @@ pi install https://github.com/gsanhueza/pi-llama-cpp
 
 ## Commands
 
-| Command                 | Description                                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `/models`               | Open the sampling set picker for the current model.                                                            |
-| `/models sampling`      | Same as above (explicit form).                                                                                 |
-| `/models sampling <n>`  | Select the named sampling set for the current model directly.                                                  |
-| `/models sampling none` | Clear the selection (server/model defaults apply).                                                             |
+| Command            | Description                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| `/sampling`        | Open the sampling set picker for the current model.                                             |
+| `/sampling <name>` | Select the named sampling set for the current model directly.                                   |
+| `/sampling none`   | Clear the selection (server/model defaults apply).                                              |
 
 ## Thinking Levels
 
@@ -156,7 +155,7 @@ The stats are scoped to the built-in llama.cpp provider: decode speed comes from
 
 A `samplingMap` defines **named sets of sampling parameters** for a model, independent of the thinking level. There is no default sampling map — the server/model defaults apply until you select a set, and selecting nothing sends no sampling fields at all.
 
-- **Selection** — `/models sampling` shows a picker of the current model's sets (plus `none`); `/models sampling <name>` selects directly; `/models sampling none` clears. The selection is per model and session-only: switching models remembers each model's choice, and restarting Pi resets everything. When a set is active, the footer shows `sampling: <name>`.
+- **Selection** — `/sampling` shows a picker of the current model's sets (plus `none`); `/sampling <name>` selects directly; `/sampling none` clears. The selection is per model and session-only: switching models remembers each model's choice, and restarting Pi resets everything. When a set is active, the footer shows `sampling: <name>`.
 - **Parameters** — set keys pass through **verbatim** to the request payload, so they must match the llama.cpp server's field names (e.g. `repeat_penalty`, not the HF/transformers `repetition_penalty`). All values are numbers. Unknown or non-numeric fields are dropped.
 - **Supported fields** — `temperature`, `top_k`, `top_p`, `min_p`, `top_nsigma`, `typical_p`, `xtc_probability`, `xtc_threshold`, `repeat_penalty`, `penalty_last_n`, `presence_penalty`, `frequency_penalty`, `dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`, `adaptive_target`, `adaptive_decay`, `dynatemp_range`, `dynatemp_exp`, `mirostat`, `mirostat_lms_lr`, `mirostat_ent_max`, `seed`.
 

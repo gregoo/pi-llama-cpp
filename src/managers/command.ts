@@ -8,7 +8,7 @@ import { ConfigResolver } from "../resolver";
 import { SamplingState, updateSamplingStatus } from "./sampling";
 
 /**
- * Command manager for the `/models` command.
+ * Command manager for the `/sampling` command.
  *
  * Model loading/unloading lives in Pi's built-in `/llama` command; this
  * extension only offers sampling set selection for the current model.
@@ -17,7 +17,9 @@ export class CommandManager {
   constructor(private readonly resolver: ConfigResolver) {}
 
   /**
-   * Sets up the argument completions for the `/models` command
+   * Sets up the argument completions for the `/sampling` command. Set
+   * names depend on the current model, so only the static keywords are
+   * completed.
    *
    * @param prefix Prefix written by the user
    * @returns Completions with that prefix
@@ -25,9 +27,9 @@ export class CommandManager {
   getArgumentCompletions(prefix: string): AutocompleteItem[] | null {
     const available = [
       {
-        value: "sampling",
-        label: "sampling",
-        description: "Select the sampling set for the current model",
+        value: "none",
+        label: "none",
+        description: "Clear the selection (use server/model defaults)",
       },
     ];
     const filtered = available.filter((a) => a.value.startsWith(prefix));
@@ -35,10 +37,11 @@ export class CommandManager {
   }
 
   /**
-   * Executes the `/models` command. With no argument (or `sampling`) it
-   * opens the sampling set picker for the current model.
+   * Executes the `/sampling` command: select the sampling set injected
+   * into requests for the current model (or clear the selection). With no
+   * argument it opens the picker.
    *
-   * @param args Arguments of the command
+   * @param args Arguments of the command (the set name)
    * @param ctx The context used by Pi
    */
   async handleCommand(
@@ -46,18 +49,10 @@ export class CommandManager {
     ctx: ExtensionCommandContext,
     _pi: ExtensionAPI,
   ) {
-    const name =
-      args === "sampling" || args.startsWith("sampling ")
-        ? args.slice("sampling".length).trim()
-        : "";
-
-    await this.handleSamplingCommand(name, ctx);
+    await this.handleSamplingCommand(args.trim(), ctx);
   }
 
   /**
-   * Handles the `sampling` subcommand: select the sampling set injected
-   * into requests for the current model (or clear the selection).
-   *
    * @param name The requested set name ("" for the picker, "none"/"off"
    *             to clear)
    * @param ctx The context used by Pi

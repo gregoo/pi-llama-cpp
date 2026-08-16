@@ -78,7 +78,7 @@ describe("command → state → payload integration", () => {
     const { command, events } = createManagers();
 
     await command.handleCommand(
-      "sampling instruct",
+      "instruct",
       createCommandCtx(llamaModel("qwen38-27b")),
       {} as any,
     );
@@ -102,12 +102,12 @@ describe("command → state → payload integration", () => {
     const { command, events } = createManagers();
 
     await command.handleCommand(
-      "sampling instruct",
+      "instruct",
       createCommandCtx(llamaModel("qwen38-27b")),
       {} as any,
     );
     await command.handleCommand(
-      "sampling none",
+      "none",
       createCommandCtx(llamaModel("qwen38-27b")),
       {} as any,
     );
@@ -126,7 +126,7 @@ describe("command → state → payload integration", () => {
     const { command, events } = createManagers();
 
     await command.handleCommand(
-      "sampling instruct",
+      "instruct",
       createCommandCtx(llamaModel("qwen38-27b")),
       {} as any,
     );
