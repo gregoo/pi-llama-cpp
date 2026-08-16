@@ -248,7 +248,7 @@ describe("thinking configuration resolution", () => {
 
     it("should use the defaults when the pattern does not match", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: { "qwen3.5*": { thinkingLevelMap: { low: {} } } },
+        llamaModelsConfig: { "qwen3.5*": { thinkingLevelMap: { low: {} } } },
       });
 
       const levels = new ConfigResolver().resolveThinkingLevels("llama-3.1-8b");
@@ -261,7 +261,7 @@ describe("thinking configuration resolution", () => {
 
     it("should use the defaults when the entry has no usable level map", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: { "*": {} },
+        llamaModelsConfig: { "*": {} },
       });
 
       expect(new ConfigResolver().resolveThinkingLevels("m").low).toEqual(
@@ -270,10 +270,10 @@ describe("thinking configuration resolution", () => {
     });
   });
 
-  describe("llamaThinking pattern matching", () => {
+  describe("llamaModelsConfig pattern matching", () => {
     it("should match wildcard patterns", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: { "qwen3.5*": { thinkingLevelMap: { low: {} } } },
+        llamaModelsConfig: { "qwen3.5*": { thinkingLevelMap: { low: {} } } },
       });
 
       expect(
@@ -286,7 +286,7 @@ describe("thinking configuration resolution", () => {
 
     it("should treat literal special characters literally, not as regex", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: { "model.v2": { thinkingLevelMap: { low: {} } } },
+        llamaModelsConfig: { "model.v2": { thinkingLevelMap: { low: {} } } },
       });
 
       expect(new ConfigResolver().resolveThinkingLevels("modelv2").low).toEqual(
@@ -299,7 +299,7 @@ describe("thinking configuration resolution", () => {
 
     it("should prefer the most specific (longest) matching pattern", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: {
+        llamaModelsConfig: {
           "qwen3.5*": { thinkingLevelMap: { low: { budget: 1 } } },
           "*": { thinkingLevelMap: { low: { budget: 2 } } },
         },
@@ -312,10 +312,14 @@ describe("thinking configuration resolution", () => {
 
     it("should prefer project entries over global entries for the same pattern", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: { "*": { thinkingLevelMap: { low: { budget: 1 } } } },
+        llamaModelsConfig: {
+          "*": { thinkingLevelMap: { low: { budget: 1 } } },
+        },
       });
       mockGetGlobalSettings.mockReturnValue({
-        llamaThinking: { "*": { thinkingLevelMap: { low: { budget: 2 } } } },
+        llamaModelsConfig: {
+          "*": { thinkingLevelMap: { low: { budget: 2 } } },
+        },
       });
 
       expect(new ConfigResolver().resolveThinkingLevels("m").low).toEqual({
@@ -325,12 +329,12 @@ describe("thinking configuration resolution", () => {
 
     it("should keep global patterns when project defines different ones", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: {
+        llamaModelsConfig: {
           "qwen3.5*": { thinkingLevelMap: { low: { budget: 1 } } },
         },
       });
       mockGetGlobalSettings.mockReturnValue({
-        llamaThinking: {
+        llamaModelsConfig: {
           "qwen3.6*": { thinkingLevelMap: { low: { budget: 2 } } },
         },
       });
@@ -344,10 +348,10 @@ describe("thinking configuration resolution", () => {
     });
   });
 
-  describe("llamaThinking level spec parsing", () => {
+  describe("llamaModelsConfig level spec parsing", () => {
     const setMap = (thinkingLevelMap: Record<string, unknown>) =>
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: { "*": { thinkingLevelMap } },
+        llamaModelsConfig: { "*": { thinkingLevelMap } },
       });
 
     it("should parse all additive fields", () => {
@@ -419,7 +423,7 @@ describe("thinking configuration resolution", () => {
 
     it("should expose available levels by name and null for holes", () => {
       mockGetProjectSettings.mockReturnValue({
-        llamaThinking: {
+        llamaModelsConfig: {
           "*": {
             thinkingLevelMap: {
               off: { enable_thinking: false },
@@ -439,6 +443,109 @@ describe("thinking configuration resolution", () => {
       expect(map.medium).toBeNull();
       expect(map.high).toBeNull();
       expect(map.max).toBeNull();
+    });
+  });
+
+  describe("llamaModelsConfig samplingMap resolution", () => {
+    const setSamplingMap = (samplingMap: unknown) =>
+      mockGetProjectSettings.mockReturnValue({
+        llamaModelsConfig: { "*": { samplingMap } },
+      });
+
+    it("should parse sets with whitelisted fields, passing keys through verbatim", () => {
+      setSamplingMap({
+        thinking: {
+          temperature: 1.0,
+          top_p: 0.95,
+          top_k: 20,
+          min_p: 0.0,
+          presence_penalty: 0.0,
+          repeat_penalty: 1.0,
+        },
+        instruct: {
+          temperature: 0.7,
+          top_p: 0.8,
+          repeat_penalty: 1.05,
+        },
+      });
+
+      expect(new ConfigResolver().resolveSamplingMap("m")).toEqual({
+        thinking: {
+          temperature: 1.0,
+          top_p: 0.95,
+          top_k: 20,
+          min_p: 0.0,
+          presence_penalty: 0.0,
+          repeat_penalty: 1.0,
+        },
+        instruct: {
+          temperature: 0.7,
+          top_p: 0.8,
+          repeat_penalty: 1.05,
+        },
+      });
+    });
+
+    it("should drop unknown fields (e.g. HF naming) and non-numeric values", () => {
+      setSamplingMap({
+        broken: {
+          repetition_penalty: 1.0, // HF name, not a server field
+          temperature: "hot",
+          top_p: NaN,
+          min_p: 0.0,
+        },
+      });
+
+      expect(new ConfigResolver().resolveSamplingMap("m")).toEqual({
+        broken: { min_p: 0.0 },
+      });
+    });
+
+    it("should omit sets with no usable fields", () => {
+      setSamplingMap({
+        empty: {},
+        unknownOnly: { repetition_penalty: 1.0 },
+        good: { temperature: 0.7 },
+      });
+
+      expect(new ConfigResolver().resolveSamplingMap("m")).toEqual({
+        good: { temperature: 0.7 },
+      });
+    });
+
+    it("should return undefined when there is no matching pattern", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaModelsConfig: {
+          "qwen*": { samplingMap: { thinking: { temperature: 1.0 } } },
+        },
+      });
+
+      expect(
+        new ConfigResolver().resolveSamplingMap("other-model"),
+      ).toBeUndefined();
+    });
+
+    it("should return undefined when the entry has no usable samplingMap", () => {
+      setSamplingMap({});
+
+      expect(new ConfigResolver().resolveSamplingMap("m")).toBeUndefined();
+    });
+
+    it("should share pattern matching with thinkingLevelMap", () => {
+      mockGetProjectSettings.mockReturnValue({
+        llamaModelsConfig: {
+          "qwen3.5*": {
+            thinkingLevelMap: { low: {} },
+            samplingMap: { thinking: { temperature: 1.0 } },
+          },
+        },
+      });
+
+      const levels = new ConfigResolver().resolveThinkingLevels("qwen3.5-27b");
+      expect(levels.low).toEqual({});
+      expect(new ConfigResolver().resolveSamplingMap("qwen3.5-27b")).toEqual({
+        thinking: { temperature: 1.0 },
+      });
     });
   });
 });

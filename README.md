@@ -136,11 +136,12 @@ The extension determines the context size as follows:
 
 ### Commands
 
-| Command          | Description                                                                        |
-| ---------------- | ---------------------------------------------------------------------------------- |
-| `/models`        | Browse your models with live status. Select a model to load, switch, or unload it. |
-| `/models info`   | Show detailed information for all available models at once.                        |
-| `/models unload` | Unload all loaded models at once.                                                  |
+| Command                   | Description                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `/models`                 | Browse your models with live status. Select a model to load, switch, or unload it.                            |
+| `/models info`            | Show detailed information for all available models at once.                                                   |
+| `/models sampling [name]` | Select the sampling parameter set injected for the current model (no argument shows a picker; `none` clears). |
+| `/models unload`          | Unload all loaded models at once.                                                                             |
 
 > **Note:** When a llama.cpp server is slow to respond, it will be skipped at startup with a warning. Run `/models` to retry without timeout and see all models.
 
@@ -193,14 +194,14 @@ Budget values can be overridden by adding a `thinkingBudgets` object to `~/.pi/a
 
 Only the `minimal` through `xhigh` budgets can be overridden — `off` and `max` are fixed: `off` always disables thinking via the chat template kwargs, and `max` is always unbounded.
 
-#### Per-model thinking configuration (`llamaThinking`)
+#### Per-model configuration (`llamaModelsConfig`)
 
-Different models need different treatment (e.g., Qwen3.5 speaks named reasoning efforts, while Qwen3.6 only understands numeric budgets). The `llamaThinking` setting — a dict of **wildcard model patterns** to entries in `.pi/settings.json` or `~/.pi/agent/settings.json` — lets you pre-configure exactly what gets sent to each model, per level:
+Different models need different treatment (e.g., Qwen3.5 speaks named reasoning efforts, while Qwen3.6 only understands numeric budgets). The `llamaModelsConfig` setting — a dict of **wildcard model patterns** to entries in `.pi/settings.json` or `~/.pi/agent/settings.json` — lets you pre-configure exactly what gets sent to each model: a per-level **thinking map** and/or named **sampling sets**:
 
 ```json
 {
-  "llamaThinking": {
-    "qwen3.5*": {
+  "llamaModelsConfig": {
+    "qwen3.8*": {
       "thinkingLevelMap": {
         "off": { "enable_thinking": false },
         "minimal": { "effort": "low", "budget": 1024 },
@@ -208,6 +209,24 @@ Different models need different treatment (e.g., Qwen3.5 speaks named reasoning 
         "medium": { "effort": "medium", "budget": 8192 },
         "high": { "effort": "xhigh", "budget": 8192 },
         "xhigh": { "effort": "xhigh" }
+      },
+      "samplingMap": {
+        "thinking": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 0.0,
+          "repeat_penalty": 1.0
+        },
+        "instruct": {
+          "temperature": 0.7,
+          "top_p": 0.8,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 1.5,
+          "repeat_penalty": 1.0
+        }
       }
     },
     "qwen3.6*": {
@@ -236,6 +255,14 @@ How it works:
 - **No match** — when no pattern matches the model, the global default map above is used, with any `thinkingBudgets` overrides applied to the `minimal`–`xhigh` budgets.
 
 Level names carry no special meaning in either path — the spec dictates what is injected, so a level with only `enable_thinking: false` disables thinking, a level with only `effort` sends just the effort, and an empty level sends nothing.
+
+##### Sampling sets (`samplingMap`)
+
+A `samplingMap` defines **named sets of sampling parameters** for a model, independent of the thinking level. There is no default sampling map — the server/model defaults apply until you select a set, and selecting nothing sends no sampling fields at all.
+
+- **Selection** — `/models sampling` shows a picker of the current model's sets (plus `none`); `/models sampling <name>` selects directly; `/models sampling none` clears. The selection is per model and session-only: switching models remembers each model's choice, and restarting Pi resets everything. When a set is active, the footer shows `sampling: <name>`.
+- **Parameters** — set keys pass through **verbatim** to the request payload, so they must match the llama.cpp server's field names (e.g. `repeat_penalty`, not the HF/transformers `repetition_penalty`). All values are numbers. Unknown or non-numeric fields are dropped.
+- **Supported fields** — `temperature`, `top_k`, `top_p`, `min_p`, `top_nsigma`, `typical_p`, `xtc_probability`, `xtc_threshold`, `repeat_penalty`, `penalty_last_n`, `presence_penalty`, `frequency_penalty`, `dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`, `adaptive_target`, `adaptive_decay`, `dynatemp_range`, `dynatemp_exp`, `mirostat`, `mirostat_lms_lr`, `mirostat_ent_max`, `seed`.
 
 ### Model Selection Event
 

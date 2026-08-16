@@ -3,13 +3,15 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { AutocompleteItem } from "@earendil-works/pi-tui";
-import { PROVIDER_NAME } from "../constants";
+import { PROVIDER_NAME, PROVIDER_PREFIX } from "../constants";
 import { Action } from "../enums/action";
 import { Mode } from "../enums/mode";
 import { Status } from "../enums/status";
 import { BaseModel } from "../models/baseModel";
+import { ConfigResolver } from "../resolver";
 import { EventManager } from "./events";
 import { ServerManager } from "./server";
+import { SamplingState, updateSamplingStatus } from "./sampling";
 
 export class CommandManager {
   constructor(private readonly serverManager: ServerManager) {}
@@ -26,6 +28,11 @@ export class CommandManager {
         value: "info",
         label: "info",
         description: "Show information of all models",
+      },
+      {
+        value: "sampling",
+        label: "sampling",
+        description: "Select the sampling set for the current model",
       },
       {
         value: "unload",
@@ -73,8 +80,78 @@ export class CommandManager {
       return;
     }
 
+    if (args === "sampling" || args.startsWith("sampling ")) {
+      const name = args.slice("sampling".length).trim();
+      await this.handleSamplingCommand(name, ctx);
+      return;
+    }
+
     // Interactive menu: show <name> (<server_url>)
     await this.runModelsMenu(ctx, pi);
+  }
+
+  /**
+   * Handles the `sampling` subcommand: select the sampling set injected
+   * into requests for the current model (or clear the selection).
+   *
+   * @param name The requested set name ("" for the picker, "none"/"off"
+   *             to clear)
+   * @param ctx The context used by Pi
+   */
+  private async handleSamplingCommand(
+    name: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const model = ctx.model;
+    if (!model || !model.provider.startsWith(PROVIDER_PREFIX)) {
+      ctx.ui.notify(
+        `Sampling sets only apply to ${PROVIDER_NAME} models. Switch to one first.`,
+        "warning",
+      );
+      return;
+    }
+
+    const samplingMap = new ConfigResolver().resolveSamplingMap(model.id);
+    if (!samplingMap) {
+      ctx.ui.notify(
+        `No sampling sets defined for ${model.id} (define a 'samplingMap' in 'llamaModelsConfig').`,
+        "warning",
+      );
+      return;
+    }
+
+    // No argument: show the picker
+    if (name === "") {
+      const choices = [...Object.keys(samplingMap), "none"];
+      const choice = await ctx.ui.select(
+        `${PROVIDER_NAME} sampling sets for ${model.name}:`,
+        choices,
+      );
+      if (!choice) return;
+      name = choice;
+    }
+
+    if (name === "none" || name === "off") {
+      SamplingState.set(model.id, undefined);
+      updateSamplingStatus(ctx, model.id);
+      ctx.ui.notify(
+        `Sampling: (none) — using ${PROVIDER_NAME} server/model defaults`,
+        "info",
+      );
+      return;
+    }
+
+    if (!(name in samplingMap)) {
+      ctx.ui.notify(
+        `Unknown sampling set '${name}'. Available: ${Object.keys(samplingMap).join(", ")}, none`,
+        "error",
+      );
+      return;
+    }
+
+    SamplingState.set(model.id, name);
+    updateSamplingStatus(ctx, model.id);
+    ctx.ui.notify(`Sampling set for ${model.name}: ${name}`, "info");
   }
 
   /**
@@ -184,9 +261,10 @@ export class CommandManager {
         // Re-scan providers to ensure accuracy of loaded models
         await this.serverManager.update(pi);
 
-        // Force TUI refresh so Pi picks up the updated model states
+        // Force TUI refresh so Pi picks up the updated model states,
+        // then restore the sampling status for this model
         ctx.ui.setStatus(PROVIDER_NAME, " ");
-        ctx.ui.setStatus(PROVIDER_NAME, undefined);
+        updateSamplingStatus(ctx, model.id);
       };
 
       // Load the model without blocking the UI

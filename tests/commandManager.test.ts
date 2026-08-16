@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Action } from "../src/enums/action";
 import { CommandManager } from "../src/managers/command";
+import { SamplingState } from "../src/managers/sampling";
 import { ServerManager } from "../src/managers/server";
 import {
   createMockCtx,
@@ -10,9 +11,32 @@ import {
   mockRpc,
 } from "./mocks";
 
+const mockSettingsManager = {
+  getProjectSettings: vi.fn<() => Record<string, unknown>>(() => ({})),
+  getGlobalSettings: vi.fn<() => Record<string, unknown>>(() => ({})),
+  getDefaultThinkingLevel: vi.fn(() => "medium"),
+  getThinkingBudgets: vi.fn<() => Record<string, number> | undefined>(
+    () => undefined,
+  ),
+};
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
+  return {
+    ...actual,
+    SettingsManager: {
+      create: () => mockSettingsManager,
+    },
+  };
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockRpc.mockResolvedValue({ data: [] });
+  SamplingState.clear();
+  mockSettingsManager.getProjectSettings.mockReturnValue({});
+  mockSettingsManager.getGlobalSettings.mockReturnValue({});
 });
 
 describe("CommandManager", () => {
@@ -29,8 +53,12 @@ describe("CommandManager", () => {
   describe("getArgumentCompletions", () => {
     it("should provide completions for /models", () => {
       const completions = commandManager.getArgumentCompletions("");
-      expect(completions).toHaveLength(2);
-      expect(completions?.map((c) => c.value)).toEqual(["info", "unload"]);
+      expect(completions).toHaveLength(3);
+      expect(completions?.map((c) => c.value)).toEqual([
+        "info",
+        "sampling",
+        "unload",
+      ]);
     });
 
     it("should filter completions by prefix", () => {
@@ -197,6 +225,124 @@ describe("CommandManager", () => {
 
       expect(ctx.ui.select).toHaveBeenCalledTimes(3);
       expect(ctx.ui.notify).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("handleCommand 'sampling'", () => {
+    const llamaModel = {
+      provider: "llama-server=http://127.0.0.1:8080",
+      id: "model-a",
+      name: "model-a",
+    };
+
+    const createSamplingCtx = (
+      selectFn: (prompt: string, options: string[]) => string | null,
+    ) => ({
+      model: llamaModel,
+      ui: {
+        select: vi.fn(selectFn),
+        notify: vi.fn(),
+        setStatus: vi.fn(),
+      },
+    });
+
+    const setSamplingMap = (samplingMap: Record<string, unknown>) =>
+      mockSettingsManager.getProjectSettings.mockReturnValue({
+        llamaModelsConfig: {
+          "*": { samplingMap },
+        },
+      });
+
+    it("should warn when the current model is not a llama.cpp model", async () => {
+      const ctx = createSamplingCtx(() => null);
+      (ctx as any).model = { provider: "anthropic", id: "claude", name: "c" };
+
+      await commandManager.handleCommand("sampling", ctx as any, mockPi as any);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("only apply to"),
+        "warning",
+      );
+    });
+
+    it("should warn when the model has no sampling sets", async () => {
+      const ctx = createSamplingCtx(() => null);
+
+      await commandManager.handleCommand("sampling", ctx as any, mockPi as any);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("No sampling sets defined"),
+        "warning",
+      );
+    });
+
+    it("should select a set by name and update the status", async () => {
+      setSamplingMap({ thinking: { temperature: 1.0 } });
+      const ctx = createSamplingCtx(() => null);
+
+      await commandManager.handleCommand(
+        "sampling thinking",
+        ctx as any,
+        mockPi as any,
+      );
+
+      expect(SamplingState.get("model-a")).toBe("thinking");
+      expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+        "Llama.cpp",
+        "sampling: thinking",
+      );
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Sampling set for model-a: thinking",
+        "info",
+      );
+    });
+
+    it("should clear the selection with 'none' and update the status", async () => {
+      setSamplingMap({ thinking: { temperature: 1.0 } });
+      SamplingState.set("model-a", "thinking");
+      const ctx = createSamplingCtx(() => null);
+
+      await commandManager.handleCommand(
+        "sampling none",
+        ctx as any,
+        mockPi as any,
+      );
+
+      expect(SamplingState.get("model-a")).toBeUndefined();
+      expect(ctx.ui.setStatus).toHaveBeenCalledWith("Llama.cpp", undefined);
+    });
+
+    it("should error on an unknown set name", async () => {
+      setSamplingMap({ thinking: { temperature: 1.0 } });
+      const ctx = createSamplingCtx(() => null);
+
+      await commandManager.handleCommand(
+        "sampling bogus",
+        ctx as any,
+        mockPi as any,
+      );
+
+      expect(SamplingState.get("model-a")).toBeUndefined();
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("Unknown sampling set 'bogus'"),
+        "error",
+      );
+    });
+
+    it("should show a picker when no name is given", async () => {
+      setSamplingMap({
+        thinking: { temperature: 1.0 },
+        instruct: { temperature: 0.7 },
+      });
+      const ctx = createSamplingCtx(() => "instruct");
+
+      await commandManager.handleCommand("sampling", ctx as any, mockPi as any);
+
+      expect(ctx.ui.select).toHaveBeenCalledWith(
+        "Llama.cpp sampling sets for model-a:",
+        ["thinking", "instruct", "none"],
+      );
+      expect(SamplingState.get("model-a")).toBe("instruct");
     });
   });
 });

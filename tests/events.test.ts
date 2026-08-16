@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_THINKING_LEVELS } from "../src/constants";
+import { SamplingState } from "../src/managers/sampling";
 import { createMockModel, createMockServer } from "./mocks";
 
 // Create a mutable mock object shared across tests
@@ -32,6 +33,7 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.restoreAllMocks();
   EventManager.resetInflightModel();
+  SamplingState.clear();
   mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("medium");
   mockSettingsManager.getThinkingBudgets.mockReturnValue(undefined);
   mockSettingsManager.getProjectSettings.mockReturnValue({});
@@ -244,9 +246,9 @@ describe("EventManager.onBeforeProviderRequest", () => {
     });
   });
 
-  // ─── Per-model thinking configuration (llamaThinking) ─────────────
+  // ─── Per-model thinking configuration (llamaModelsConfig) ─────────────
 
-  describe("per-model llamaThinking configuration", () => {
+  describe("per-model llamaModelsConfig configuration", () => {
     const QWEN35_MAP = {
       off: { enable_thinking: false, preserve_thinking: false },
       minimal: { effort: "low", budget: 1024 },
@@ -258,7 +260,7 @@ describe("EventManager.onBeforeProviderRequest", () => {
 
     const setLlamaThinking = (entries: Record<string, unknown>) =>
       mockSettingsManager.getProjectSettings.mockReturnValue({
-        llamaThinking: entries,
+        llamaModelsConfig: entries,
       });
 
     const runRequest = async (modelId: string) => {
@@ -362,6 +364,116 @@ describe("EventManager.onBeforeProviderRequest", () => {
       const result = await runRequest("m");
 
       expect(result).toEqual(createPayload("m"));
+    });
+
+    describe("sampling set injection", () => {
+      const setSamplingConfig = (entries: Record<string, unknown>) =>
+        mockSettingsManager.getProjectSettings.mockReturnValue({
+          llamaModelsConfig: entries,
+        });
+
+      const runRequest = async (modelId: string) => {
+        const server = createMockServer({
+          models: [modelId].map((id) => createMockModel(id)),
+        });
+        const eventManager = new EventManager([server]);
+        const event = { payload: createPayload(modelId) };
+
+        return (await eventManager.onBeforeProviderRequest(
+          event as any,
+        )) as Record<string, unknown>;
+      };
+
+      it("should inject the selected set's parameters top-level", async () => {
+        setSamplingConfig({
+          "*": {
+            samplingMap: {
+              thinking: {
+                temperature: 1.0,
+                top_p: 0.95,
+                presence_penalty: 0.0,
+              },
+            },
+          },
+        });
+        SamplingState.set("m", "thinking");
+
+        const result = await runRequest("m");
+
+        expect(result).toMatchObject({
+          temperature: 1.0,
+          top_p: 0.95,
+          presence_penalty: 0.0,
+        });
+      });
+
+      it("should inject sampling params alongside the thinking spec", async () => {
+        setSamplingConfig({
+          "*": {
+            thinkingLevelMap: { low: { budget: 8192 } },
+            samplingMap: { instruct: { temperature: 0.7 } },
+          },
+        });
+        SamplingState.set("m", "instruct");
+        mockSettingsManager.getDefaultThinkingLevel.mockReturnValue("low");
+
+        const result = await runRequest("m");
+
+        expect(result).toMatchObject({
+          thinking_budget_tokens: 8192,
+          temperature: 0.7,
+        });
+      });
+
+      // With no sampling set active, only the default thinking budget applies
+      const UNCHANGED_BY_SAMPLING = {
+        ...createPayload("m"),
+        thinking_budget_tokens: DEFAULT_THINKING_LEVELS.medium.budget,
+      };
+
+      it("should inject nothing when no set is selected", async () => {
+        setSamplingConfig({
+          "*": {
+            samplingMap: { thinking: { temperature: 1.0 } },
+          },
+        });
+
+        const result = await runRequest("m");
+
+        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+      });
+
+      it("should not leak a selection from another model", async () => {
+        setSamplingConfig({
+          "*": {
+            samplingMap: { thinking: { temperature: 1.0 } },
+          },
+        });
+        SamplingState.set("other-model", "thinking");
+
+        const result = await runRequest("m");
+
+        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+      });
+
+      it("should ignore a selected set that no longer exists for the model", async () => {
+        setSamplingConfig({
+          "*": { samplingMap: { instruct: { temperature: 0.7 } } },
+        });
+        SamplingState.set("m", "thinking");
+
+        const result = await runRequest("m");
+
+        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+      });
+
+      it("should inject nothing for models without a samplingMap", async () => {
+        SamplingState.set("m", "thinking");
+
+        const result = await runRequest("m");
+
+        expect(result).toEqual(UNCHANGED_BY_SAMPLING);
+      });
     });
 
     it("should use budget-only entries for budget models (e.g. qwen3.6)", async () => {

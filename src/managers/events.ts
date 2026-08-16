@@ -7,6 +7,7 @@ import { ModelSelectEvent } from "../interfaces/events";
 import { BaseModel } from "../models/baseModel";
 import { ConfigResolver } from "../resolver";
 import { Server } from "../server";
+import { SamplingState, updateSamplingStatus } from "./sampling";
 
 export class EventManager {
   static inflightModel: BaseModel | null = null;
@@ -32,6 +33,9 @@ export class EventManager {
 
       const model = models.find((m) => m.id === event.model.id);
       if (!model) continue;
+
+      // Restore the footer status for this model's sampling selection
+      updateSamplingStatus(ctx, model.id);
 
       ctx.ui.notify(`Loading ${model.name}...`, "info");
       await model
@@ -87,27 +91,37 @@ export class EventManager {
 
     if (!isLlamaCpp) return payload;
 
-    // Resolve pi's current thinking level and this model's level specs
+    // Resolve pi's current thinking level and this model's specs
     const resolver = new ConfigResolver();
+
+    const additions: Record<string, unknown> = {};
+
+    // Thinking: inject whatever the selected level's spec defines
     const levels = resolver.resolveThinkingLevels(model);
     const level = resolver.resolveThinkingLevel() ?? "medium";
 
     // Unavailable levels add nothing (Pi should clamp away, defensive)
     const spec = levels[level];
-    if (spec === null) return payload;
+    if (spec !== null) {
+      if (spec.budget !== undefined)
+        additions.thinking_budget_tokens = spec.budget;
 
-    // Inject whatever this level's spec defines
-    const additions: Record<string, unknown> = {};
-    if (spec.budget !== undefined)
-      additions.thinking_budget_tokens = spec.budget;
+      const kwargs: Record<string, unknown> = {};
+      if (spec.effort !== undefined) kwargs.reasoning_effort = spec.effort;
+      if (spec.enable_thinking !== undefined)
+        kwargs.enable_thinking = spec.enable_thinking;
+      if (spec.preserve_thinking !== undefined)
+        kwargs.preserve_thinking = spec.preserve_thinking;
+      if (Object.keys(kwargs).length > 0)
+        additions.chat_template_kwargs = kwargs;
+    }
 
-    const kwargs: Record<string, unknown> = {};
-    if (spec.effort !== undefined) kwargs.reasoning_effort = spec.effort;
-    if (spec.enable_thinking !== undefined)
-      kwargs.enable_thinking = spec.enable_thinking;
-    if (spec.preserve_thinking !== undefined)
-      kwargs.preserve_thinking = spec.preserve_thinking;
-    if (Object.keys(kwargs).length > 0) additions.chat_template_kwargs = kwargs;
+    // Sampling: inject the selected named set's parameters, if any
+    const setName = SamplingState.get(model);
+    if (setName !== undefined) {
+      const params = resolver.resolveSamplingMap(model)?.[setName];
+      if (params) Object.assign(additions, params);
+    }
 
     return Object.keys(additions).length > 0
       ? { ...payload, ...additions }

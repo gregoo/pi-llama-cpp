@@ -105,6 +105,46 @@ export const DEFAULT_THINKING_LEVELS: Record<
 };
 
 /**
+ * Sampling parameters accepted in `samplingMap` entries, as recognized by
+ * the llama.cpp server API. Keys pass through verbatim to the request
+ * payload, so names must match the server's field names. All values are
+ * numbers. To support a new server parameter, add its name here.
+ */
+export const SAMPLING_PARAM_FIELDS = [
+  // Core sampling
+  "temperature",
+  "top_k",
+  "top_p",
+  "min_p",
+  "top_nsigma",
+  "typical_p",
+  "xtc_probability",
+  "xtc_threshold",
+  // Penalties
+  "repeat_penalty",
+  "penalty_last_n",
+  "presence_penalty",
+  "frequency_penalty",
+  // DRY sampling
+  "dry_multiplier",
+  "dry_base",
+  "dry_allowed_length",
+  "dry_penalty_last_n",
+  // adaptive-p
+  "adaptive_target",
+  "adaptive_decay",
+  // Dynamic temperature
+  "dynatemp_range",
+  "dynatemp_exp",
+  // Mirostat
+  "mirostat",
+  "mirostat_lms_lr",
+  "mirostat_ent_max",
+  // Reproducibility
+  "seed",
+] as const;
+
+/**
  * Levels whose default `budget` can be overridden via `thinkingBudgets`.
  * `off` and `max` are fixed (they are not budget-driven).
  */

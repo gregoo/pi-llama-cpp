@@ -10,6 +10,7 @@ import {
   API_KEY_PLACEHOLDER,
   DEFAULT_LLAMA_SERVER_URL,
   DEFAULT_THINKING_LEVELS,
+  SAMPLING_PARAM_FIELDS,
   THINKING_BUDGET_OVERRIDE_LEVELS,
   THINKING_LEVELS,
   type ThinkingLevelSpec,
@@ -138,12 +139,12 @@ export class ConfigResolver {
   /**
    * Resolves the effective per-level thinking specs for a model.
    *
-   * Reads the `llamaThinking` setting (a dict of wildcard model patterns to
-   * entries, project-level first, then global):
+   * Reads the `thinkingLevelMap` of the model's `llamaModelsConfig` entry
+   * (see {@link resolveLlamaModelsEntry}):
    *
    * ```json
    * {
-   *   "llamaThinking": {
+   *   "llamaModelsConfig": {
    *     "qwen3.5*": {
    *       "thinkingLevelMap": {
    *         "off": { "enable_thinking": false },
@@ -174,23 +175,7 @@ export class ConfigResolver {
   resolveThinkingLevels(
     modelId: string,
   ): Record<ModelThinkingLevel, ThinkingLevelSpec | null> {
-    const project = this.settingsManager.getProjectSettings() as Record<
-      string,
-      unknown
-    >;
-    const global = this.settingsManager.getGlobalSettings() as Record<
-      string,
-      unknown
-    >;
-
-    const entries: Record<string, LlamaThinkingEntry> = {
-      ...((global.llamaThinking as Record<string, LlamaThinkingEntry>) ?? {}),
-      ...((project.llamaThinking as Record<string, LlamaThinkingEntry>) ?? {}),
-    };
-
-    const pattern = this.findBestThinkingPattern(entries, modelId);
-    const raw =
-      pattern !== undefined ? entries[pattern]?.thinkingLevelMap : undefined;
+    const raw = this.resolveLlamaModelsEntry(modelId)?.thinkingLevelMap;
 
     if (raw === null || typeof raw !== "object")
       return this.resolveDefaultLevels();
@@ -202,6 +187,127 @@ export class ConfigResolver {
       );
 
     return levels;
+  }
+
+  /**
+   * Resolves the named sampling parameter sets for a model.
+   *
+   * Reads the `samplingMap` of the model's `llamaModelsConfig` entry:
+   *
+   * ```json
+   * {
+   *   "llamaModelsConfig": {
+   *     "qwen3.5*": {
+   *       "samplingMap": {
+   *         "thinking": {
+   *           "temperature": 1.0,
+   *           "top_p": 0.95,
+   *           "top_k": 20,
+   *           "presence_penalty": 0.0,
+   *           "repeat_penalty": 1.0
+   *         },
+   *         "instruct": {
+   *           "temperature": 0.7,
+   *           "top_p": 0.8,
+   *           "top_k": 20,
+   *           "presence_penalty": 1.5,
+   *           "repeat_penalty": 1.0
+   *         }
+   *       }
+   *     }
+   *   }
+   * }
+   * ```
+   *
+   * Each key is a set name and its value is a dict of sampling parameters.
+   * Parameter keys pass through verbatim to the request payload, so they
+   * must match the llama.cpp server's field names (see
+   * {@link SAMPLING_PARAM_FIELDS}); unknown or non-numeric fields are
+   * dropped. Sets with no usable fields are omitted.
+   *
+   * There is no default sampling map — nothing is injected unless the user
+   * selects a set for the model (session-only, per model).
+   *
+   * @param modelId The model ID
+   * @returns The set name → parameters map, or undefined if none available
+   */
+  resolveSamplingMap(
+    modelId: string,
+  ): Record<string, Record<string, number>> | undefined {
+    const raw = this.resolveLlamaModelsEntry(modelId)?.samplingMap;
+    if (raw === null || typeof raw !== "object") return undefined;
+
+    const map: Record<string, Record<string, number>> = {};
+    for (const [name, value] of Object.entries(
+      raw as Record<string, unknown>,
+    )) {
+      const params = this.parseSamplingSet(value);
+      if (params) map[name] = params;
+    }
+
+    return Object.keys(map).length > 0 ? map : undefined;
+  }
+
+  /**
+   * Resolves the raw `llamaModelsConfig` entry for a model.
+   *
+   * Reads the `llamaModelsConfig` setting — a dict of wildcard model
+   * patterns to entries, project-level overriding global (see
+   * {@link findBestModelPattern}).
+   *
+   * @param modelId The model ID
+   * @returns The matching entry, if any
+   */
+  private resolveLlamaModelsEntry(
+    modelId: string,
+  ): LlamaModelsConfigEntry | undefined {
+    const project = this.settingsManager.getProjectSettings() as Record<
+      string,
+      unknown
+    >;
+    const global = this.settingsManager.getGlobalSettings() as Record<
+      string,
+      unknown
+    >;
+
+    const entries: Record<string, LlamaModelsConfigEntry> = {
+      ...((global.llamaModelsConfig as Record<
+        string,
+        LlamaModelsConfigEntry
+      >) ?? {}),
+      ...((project.llamaModelsConfig as Record<
+        string,
+        LlamaModelsConfigEntry
+      >) ?? {}),
+    };
+
+    const pattern = this.findBestModelPattern(entries, modelId);
+    return pattern !== undefined ? entries[pattern] : undefined;
+  }
+
+  /**
+   * Parses a single sampling set from raw settings, keeping only fields the
+   * llama.cpp server accepts (see {@link SAMPLING_PARAM_FIELDS}) with
+   * numeric values.
+   *
+   * @param value The raw value for one set name
+   * @returns The parsed parameters, or null if the set has no usable fields
+   */
+  private parseSamplingSet(value: unknown): Record<string, number> | null {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return null;
+
+    const params: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (
+        (SAMPLING_PARAM_FIELDS as readonly string[]).includes(key) &&
+        typeof raw === "number" &&
+        Number.isFinite(raw)
+      )
+        params[key] = raw;
+    }
+
+    return Object.keys(params).length > 0 ? params : null;
   }
 
   /**
@@ -274,16 +380,16 @@ export class ConfigResolver {
   }
 
   /**
-   * Finds the most specific `llamaThinking` pattern matching a model ID.
+   * Finds the most specific `llamaModelsConfig` pattern matching a model ID.
    * Patterns support `*` wildcards. Longest pattern wins; first-defined wins
    * on ties.
    *
-   * @param entries The `llamaThinking` entries
+   * @param entries The `llamaModelsConfig` entries
    * @param modelId The model ID to match
    * @returns The winning pattern, if any
    */
-  private findBestThinkingPattern(
-    entries: Record<string, LlamaThinkingEntry>,
+  private findBestModelPattern(
+    entries: Record<string, LlamaModelsConfigEntry>,
     modelId: string,
   ): string | undefined {
     let best: string | undefined;
@@ -314,8 +420,9 @@ export class ConfigResolver {
 }
 
 /**
- * A single `llamaThinking` settings entry.
+ * A single `llamaModelsConfig` settings entry.
  */
-interface LlamaThinkingEntry {
+interface LlamaModelsConfigEntry {
   thinkingLevelMap?: unknown;
+  samplingMap?: unknown;
 }
