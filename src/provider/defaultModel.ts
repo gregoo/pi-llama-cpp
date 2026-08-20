@@ -35,7 +35,8 @@ function getDefaultModelMap(): Promise<Record<string, string> | null> {
               const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
               if (pkg.name === PI_PACKAGE_NAME) {
                 const mod: any = await import(
-                  pathToFileURL(join(dir, "dist", "core", "model-resolver.js")).href
+                  pathToFileURL(join(dir, "dist", "core", "model-resolver.js"))
+                    .href
                 );
                 const map = mod?.defaultModelPerProvider;
                 return map && typeof map === "object" ? map : null;

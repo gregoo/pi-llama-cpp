@@ -60,7 +60,10 @@ const runRequest = async (
 
 describe("EventManager.onBeforeProviderRequest", () => {
   describe("normal usage — each thinking level", () => {
-    const cases: { level: ModelThinkingLevel; expected: Record<string, unknown> }[] = [
+    const cases: {
+      level: ModelThinkingLevel;
+      expected: Record<string, unknown>;
+    }[] = [
       {
         level: "off",
         expected: { chat_template_kwargs: { enable_thinking: false } },
@@ -240,7 +243,10 @@ describe("EventManager.onBeforeProviderRequest", () => {
     it("should inject both effort and budget when both are set", async () => {
       setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "minimal"));
+      const result = await runRequest(
+        createPayload(),
+        llamaCtx("qwen3.5-27b", "minimal"),
+      );
 
       expect(result).toMatchObject({
         thinking_budget_tokens: 1024,
@@ -251,7 +257,10 @@ describe("EventManager.onBeforeProviderRequest", () => {
     it("should inject only the effort when no budget is set (unbounded)", async () => {
       setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "xhigh"));
+      const result = await runRequest(
+        createPayload(),
+        llamaCtx("qwen3.5-27b", "xhigh"),
+      );
 
       expect(result).toMatchObject({
         chat_template_kwargs: { reasoning_effort: "xhigh" },
@@ -262,7 +271,10 @@ describe("EventManager.onBeforeProviderRequest", () => {
     it("should inject the off kwargs when configured for the off level", async () => {
       setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "off"));
+      const result = await runRequest(
+        createPayload(),
+        llamaCtx("qwen3.5-27b", "off"),
+      );
 
       expect(result).toMatchObject({
         chat_template_kwargs: {
@@ -335,7 +347,10 @@ describe("EventManager.onBeforeProviderRequest", () => {
         },
       });
 
-      const result = await runRequest(createPayload(), llamaCtx("qwen3.6-27b", "low"));
+      const result = await runRequest(
+        createPayload(),
+        llamaCtx("qwen3.6-27b", "low"),
+      );
 
       expect(result).toMatchObject({ thinking_budget_tokens: 2048 });
       expect(result).not.toHaveProperty("chat_template_kwargs");
@@ -344,7 +359,10 @@ describe("EventManager.onBeforeProviderRequest", () => {
     it("should fall back to the historical budget behavior when no pattern matches", async () => {
       setLlamaModelsConfig({ "qwen3.5*": { thinkingLevelMap: QWEN35_MAP } });
 
-      const result = await runRequest(createPayload(), llamaCtx("some-other-model", "high"));
+      const result = await runRequest(
+        createPayload(),
+        llamaCtx("some-other-model", "high"),
+      );
 
       expect(result.thinking_budget_tokens).toBe(
         DEFAULT_THINKING_LEVELS.high.budget,
@@ -357,7 +375,10 @@ describe("EventManager.onBeforeProviderRequest", () => {
         "qwen3.5*": { thinkingLevelMap: { low: { budget: 2 } } },
       });
 
-      const result = await runRequest(createPayload(), llamaCtx("qwen3.5-27b", "low"));
+      const result = await runRequest(
+        createPayload(),
+        llamaCtx("qwen3.5-27b", "low"),
+      );
 
       expect(result.thinking_budget_tokens).toBe(2);
     });

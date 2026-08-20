@@ -45,7 +45,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
   afterEach(() => vi.resetModules());
 
   it("applies reasoning + thinkingLevelMap using the default map when no pattern matches", () => {
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     const [model] = wrapper.supercharge([baseModel("qwen38-27b")]);
 
     expect(model.reasoning).toBe(true);
@@ -61,7 +64,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
   });
 
   it("preserves all other model fields untouched", () => {
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     const original = baseModel("qwen38-27b");
     const [model] = wrapper.supercharge([original]);
 
@@ -86,7 +92,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
       },
     });
 
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     const [model] = wrapper.supercharge([baseModel("qwen38-27b")]);
 
     expect(model.reasoning).toBe(true);
@@ -108,7 +117,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
       },
     });
 
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     const original = baseModel("gemma4-26b");
     const [model] = wrapper.supercharge([original]);
 
@@ -120,7 +132,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
       throw new Error("settings exploded");
     });
 
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     const original = baseModel("qwen38-27b");
     const [model] = wrapper.supercharge([original]);
 
@@ -135,7 +150,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
       },
     });
 
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     const bad = baseModel("bad-model");
     const good = baseModel("good-model");
     const [modelBad, modelGood] = wrapper.supercharge([bad, good]);
@@ -146,7 +164,10 @@ describe("LlamaProviderWrapper.supercharge", () => {
   });
 
   it("returns an empty list for an empty catalog", () => {
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     expect(wrapper.supercharge([])).toEqual([]);
   });
 });
@@ -198,7 +219,10 @@ describe("LlamaProviderWrapper.init", () => {
   it("registers a native provider that passes the built-in through and supercharges getModels", () => {
     const ctx = makeCtx(fakeBuiltin);
     const { pi, registerProvider } = makePi(ctx);
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
 
     expect(wrapper.init(pi, ctx)).toBe(true);
     expect(wrapper.isWrapped).toBe(true);
@@ -221,10 +245,16 @@ describe("LlamaProviderWrapper.init", () => {
     const builtinStreamSimple = vi.fn(
       async (_model: unknown, _context: unknown, _options: unknown) => {},
     );
-    const dynamicBuiltin = { ...fakeBuiltin, streamSimple: builtinStreamSimple };
+    const dynamicBuiltin = {
+      ...fakeBuiltin,
+      streamSimple: builtinStreamSimple,
+    };
     const ctx = makeCtx(dynamicBuiltin);
     const { pi } = makePi(ctx);
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
 
     expect(wrapper.init(pi, ctx)).toBe(true);
     const registered = (pi.registerProvider as any).mock.calls[0][0];
@@ -240,9 +270,11 @@ describe("LlamaProviderWrapper.init", () => {
     // Caller-provided fetch: wrapped, not replaced
     const callerFetch = vi.fn();
     await registered.streamSimple(baseModel("m"), {}, { fetch: callerFetch });
-    const wrappedFetch = (builtinStreamSimple.mock.calls[1][2] as {
-      fetch?: unknown;
-    }).fetch;
+    const wrappedFetch = (
+      builtinStreamSimple.mock.calls[1][2] as {
+        fetch?: unknown;
+      }
+    ).fetch;
     expect(wrappedFetch).not.toBe(callerFetch);
   });
 
@@ -251,7 +283,10 @@ describe("LlamaProviderWrapper.init", () => {
     const dynamicBuiltin = { ...fakeBuiltin, getModels: () => live };
     const ctx = makeCtx(dynamicBuiltin);
     const { pi, registerProvider } = makePi(ctx);
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     wrapper.init(pi, ctx);
 
     const registered = registerProvider.mock.calls[0][0] as any;
@@ -270,7 +305,10 @@ describe("LlamaProviderWrapper.init", () => {
   it("is idempotent — a second init on the same runtime does not re-register", () => {
     const ctx = makeCtx(fakeBuiltin);
     const { pi, registerProvider } = makePi(ctx);
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     wrapper.init(pi, ctx);
     expect(wrapper.init(pi, ctx)).toBe(true);
     expect(registerProvider).toHaveBeenCalledTimes(1);
@@ -279,7 +317,10 @@ describe("LlamaProviderWrapper.init", () => {
   it("re-wraps when the runtime is rebuilt (fresh native map)", () => {
     const ctx1 = makeCtx(fakeBuiltin);
     const { pi, registerProvider } = makePi(ctx1);
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
     wrapper.init(pi, ctx1);
 
     // /new or /resume: a fresh ModelRuntime with the raw built-in again.
@@ -291,7 +332,10 @@ describe("LlamaProviderWrapper.init", () => {
   it("stays inert when the built-in provider is not present", () => {
     const ctx = makeCtx(undefined);
     const { pi, registerProvider } = makePi(ctx);
-    const wrapper = new LlamaProviderWrapper(new ConfigResolver(), new StatsManager());
+    const wrapper = new LlamaProviderWrapper(
+      new ConfigResolver(),
+      new StatsManager(),
+    );
 
     expect(wrapper.init(pi, ctx)).toBe(false);
     expect(wrapper.isWrapped).toBe(false);

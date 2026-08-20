@@ -228,15 +228,19 @@ export class StatsManager {
     const genTokens =
       usage && usage.output > 0
         ? usage.output
-        : this.serverTokens() ??
+        : (this.serverTokens() ??
           (typeof chunkTokens === "number" && chunkTokens > 0
             ? chunkTokens
-            : this.tokenCount);
+            : this.tokenCount));
 
     // Speed: prefer the server's own clock, fall back to local elapsed time.
     let avgTps: number;
     const predMs = this.timings?.predicted_ms;
-    if (genTokens === this.serverTokens() && typeof predMs === "number" && predMs > 0) {
+    if (
+      genTokens === this.serverTokens() &&
+      typeof predMs === "number" &&
+      predMs > 0
+    ) {
       avgTps = genTokens / (predMs / 1000);
     } else {
       const elapsedSec = (Date.now() - this.genStart) / 1000;
@@ -313,7 +317,10 @@ export class StatsManager {
             usage?: LlamaUsage;
             delta?: DeltaKind;
           } = {};
-          if (chunk.prompt_progress && typeof chunk.prompt_progress === "object") {
+          if (
+            chunk.prompt_progress &&
+            typeof chunk.prompt_progress === "object"
+          ) {
             data.progress = chunk.prompt_progress as PromptProgress;
           }
           if (chunk.timings && typeof chunk.timings === "object") {
@@ -438,7 +445,9 @@ export class StatsManager {
 function messageProvider(message: unknown): string | undefined {
   if (typeof message !== "object" || message === null) return undefined;
   const candidate = message as { provider?: unknown };
-  return typeof candidate.provider === "string" ? candidate.provider : undefined;
+  return typeof candidate.provider === "string"
+    ? candidate.provider
+    : undefined;
 }
 
 function formatDuration(seconds: number): string {
@@ -502,7 +511,11 @@ function tapSseBody(
 }
 
 /** Reasoning fields pi-ai's parser accepts, in priority order. */
-const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"] as const;
+const REASONING_FIELDS = [
+  "reasoning_content",
+  "reasoning",
+  "reasoning_text",
+] as const;
 
 /**
  * Detects a token-carrying delta in an SSE chunk, mirroring the cases

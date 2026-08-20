@@ -34,9 +34,12 @@
     ]
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "format": "prettier --write src tests",
+    "format:check": "prettier --check src tests"
   },
   "prettier": {
+    "printWidth": 80,
     "plugins": [
       "prettier-plugin-organize-imports"
     ]
@@ -48,7 +51,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "prettier-plugin-organize-imports": "^4.3.0",
+    "prettier": "3.9.6",
+    "prettier-plugin-organize-imports": "4.3.0",
     "vitest": "^4.1.10"
   }
 }

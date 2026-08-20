@@ -51,7 +51,10 @@ beforeEach(() => {
 /** One resolver shared by both managers, as wired in src/index.ts. */
 const createManagers = () => {
   const resolver = new ConfigResolver();
-  return { command: new CommandManager(resolver), events: new EventManager(resolver) };
+  return {
+    command: new CommandManager(resolver),
+    events: new EventManager(resolver),
+  };
 };
 
 const llamaModel = (id: string) => ({ id, provider: LLAMA_PROVIDER_ID });
@@ -131,7 +134,9 @@ describe("command → state → payload integration", () => {
       {} as any,
     );
 
-    const ctx = createRequestCtx(llamaModel("qwen38-27b")) as ExtensionContext & {
+    const ctx = createRequestCtx(
+      llamaModel("qwen38-27b"),
+    ) as ExtensionContext & {
       ui: { setStatus: ReturnType<typeof vi.fn> };
     };
     (ctx as any).ui = { setStatus: vi.fn() };

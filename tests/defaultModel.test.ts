@@ -16,7 +16,12 @@ describe("setLlamaDefaultModel", () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "pi-fake-"));
-    const pkgDir = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+    const pkgDir = join(
+      root,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+    );
     mkdirSync(join(pkgDir, "dist", "core"), { recursive: true });
     writeFileSync(
       join(pkgDir, "package.json"),
@@ -46,7 +51,8 @@ describe("setLlamaDefaultModel", () => {
 
   it("registers the model in Pi's defaultModelPerProvider map", async () => {
     process.argv[1] = fakeBin;
-    const { setLlamaDefaultModel } = await import("../src/provider/defaultModel");
+    const { setLlamaDefaultModel } =
+      await import("../src/provider/defaultModel");
 
     await setLlamaDefaultModel("qwen38-27b");
 
@@ -57,7 +63,8 @@ describe("setLlamaDefaultModel", () => {
 
   it("updates the registered model on subsequent calls", async () => {
     process.argv[1] = fakeBin;
-    const { setLlamaDefaultModel } = await import("../src/provider/defaultModel");
+    const { setLlamaDefaultModel } =
+      await import("../src/provider/defaultModel");
 
     await setLlamaDefaultModel("qwen38-27b");
     await setLlamaDefaultModel("gpt-20b");
@@ -69,7 +76,8 @@ describe("setLlamaDefaultModel", () => {
 
   it("is a no-op (never throws) when Pi cannot be located", async () => {
     process.argv[1] = join(root, "does-not-exist");
-    const { setLlamaDefaultModel } = await import("../src/provider/defaultModel");
+    const { setLlamaDefaultModel } =
+      await import("../src/provider/defaultModel");
 
     await expect(setLlamaDefaultModel("x")).resolves.toBeUndefined();
     expect((globalThis as Record<string, any>).__piFakeMap).toBeUndefined();

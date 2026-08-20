@@ -1,5 +1,8 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { LLAMA_PROVIDER_ID, THINKING_LEVELS } from "../constants";
 import { ConfigResolver } from "../resolver";
 import { StatsManager } from "../managers/stats";
@@ -70,10 +73,9 @@ export class LlamaProviderWrapper {
 
     // The internal map is untyped; the value is either the raw built-in
     // provider or (after our first registration) our own wrapper.
-    const builtin = (
-      natives?.get(LLAMA_PROVIDER_ID) ??
-      ctx.modelRegistry.getProvider(LLAMA_PROVIDER_ID)
-    ) as Provider<Api> | undefined;
+    const builtin = (natives?.get(LLAMA_PROVIDER_ID) ??
+      ctx.modelRegistry.getProvider(LLAMA_PROVIDER_ID)) as
+      Provider<Api> | undefined;
     if (!builtin || typeof builtin.getModels !== "function") return false;
 
     // Already wrapped this runtime: the registered provider carries our marker.

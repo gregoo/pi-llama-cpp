@@ -23,13 +23,10 @@ const sseBody = (chunks: string[]) =>
 const SSE_CHUNKS = [
   'data: {"prompt_progress":{"total":100,"processed":40,"time_ms":200}}\n\n',
   'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
-  'data: [DONE]\n\n',
+  "data: [DONE]\n\n",
 ];
 
-const makeAssistantUpdate = (
-  deltaType: string,
-  provider = "llama.cpp",
-) =>
+const makeAssistantUpdate = (deltaType: string, provider = "llama.cpp") =>
   ({
     type: "message_update",
     message: { role: "assistant", provider },
@@ -55,10 +52,9 @@ describe("StatsManager.tapFetch", () => {
     const text = await response.text();
 
     expect(text).toBe(SSE_CHUNKS.join("")); // byte-identical pass-through
-    expect(setWidget).toHaveBeenCalledWith(
-      "llama-stats",
-      [expect.stringContaining("40%")],
-    );
+    expect(setWidget).toHaveBeenCalledWith("llama-stats", [
+      expect.stringContaining("40%"),
+    ]);
   });
 
   it("passes non-ok responses through untouched", async () => {
@@ -143,12 +139,9 @@ describe("StatsManager prefill display", () => {
     stats.beginStream();
     stats.onChunk({ progress: { total: 1000, processed: 250, time_ms: 1000 } });
 
-    expect(setWidget).toHaveBeenCalledWith(
-      "llama-stats",
-      [
-        expect.stringMatching(/📖 .*█+░*.*25%/),
-      ],
-    );
+    expect(setWidget).toHaveBeenCalledWith("llama-stats", [
+      expect.stringMatching(/📖 .*█+░*.*25%/),
+    ]);
     const msg = setWidget.mock.calls.at(-1)![1][0] as string;
     expect(msg).toContain("250.0 tok/s");
     expect(msg).toContain("~3s left");
@@ -498,8 +491,7 @@ describe("StatsManager compaction coverage", () => {
     let push: (chunk: string) => void = () => undefined;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
-        push = (chunk) =>
-          controller.enqueue(new TextEncoder().encode(chunk));
+        push = (chunk) => controller.enqueue(new TextEncoder().encode(chunk));
       },
     });
 
