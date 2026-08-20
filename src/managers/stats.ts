@@ -13,6 +13,16 @@ export interface PromptProgress {
   cache?: number;
 }
 
+/** Kinds of token deltas tracked for decode speed (mirrors pi-ai's parser). */
+export type DeltaKind = "text" | "thinking" | "toolcall";
+
+/** OpenAI-style usage object carried by the final SSE chunk. */
+export interface LlamaUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
 /** A llama.cpp `timings` chunk (present on every SSE chunk in recent builds). */
 export interface LlamaTimings {
   cache_n?: number;
@@ -43,17 +53,25 @@ const MAX_TOKEN_TIMESTAMPS = 50;
 /**
  * Real-time generation stats for the built-in llama.cpp provider.
  *
- * Two scoped feeds, no global fetch patching:
+ * The fetch tap (`tapFetch()`, wired into the wrapper's `streamSimple`) is
+ * the primary feed: it sees every request the provider makes — including
+ * compaction and branch summarization, which bypass the agent loop and its
+ * extension events. It injects `return_progress: true` into the request
+ * body, then reads off the raw SSE stream:
  *
- * - **Prefill** — `tapFetch()` wraps the provider's own fetch and reads
- *   `prompt_progress` chunks off the raw SSE body (pi-ai's parser drops
- *   non-standard fields, so no event carries them). Only works when the
- *   server build supports `return_progress`; otherwise the `timings`
- *   counter in every chunk is used instead.
- * - **Decode** — server-reported `timings` (`predicted_n`,
+ * - **Prefill** — `prompt_progress` chunks (pi-ai's parser drops
+ *   non-standard fields, so no event carries them); when the server build
+ *   lacks support, the `timings` counter in every chunk is used instead.
+ * - **Decode** — token deltas detected in the raw chunks (mirroring pi-ai's
+ *   parser), plus server-reported `timings` (`predicted_n`,
  *   `predicted_per_second`) when present: authoritative under speculative
- *   decoding, where one SSE chunk can carry several tokens. Pi's
- *   `message_update` per-delta timing is the fallback for older builds.
+ *   decoding, where one SSE chunk can carry several tokens.
+ *
+ * Pi's `message_update` per-delta timing is a secondary feed for the agent
+ * loop (first-wins dedup keeps the two from double-counting), and
+ * `message_end` refines the final stats with authoritative usage. When the
+ * tapped body completes, `finishStream()` finalizes — covering compaction,
+ * where no `message_end` ever fires.
  *
  * Display uses the `llama-stats` widget slot, separate from the sampling
  * footer status.
@@ -69,7 +87,17 @@ export class StatsManager {
   // Latest server-reported timings (fed by the stream tap)
   private timings: LlamaTimings | null = null;
 
-  // Decode state (fed by message_update; fallback when no timings)
+  // Usage from the final SSE chunk (fed by the stream tap)
+  private streamUsage: LlamaUsage | null = null;
+
+  // Which feed counts token deltas for the current stream. The tap sees
+  // every request through the wrapped provider (agent turns AND compaction),
+  // while message_update only fires inside the agent loop. Whichever feed
+  // reports the first delta claims counting, so a token is never counted by
+  // both (the tap is upstream of pi-ai's parser and wins in practice).
+  private deltaSource: "tap" | "events" | null = null;
+
+  // Decode state (fallback when no server timings/usage)
   private tokenCount = 0;
   private timestamps: number[] = [];
   private genStart = 0;
@@ -96,6 +124,8 @@ export class StatsManager {
     this.progress = null;
     this.hasPrefill = false;
     this.timings = null;
+    this.streamUsage = null;
+    this.deltaSource = null;
     this.tokenCount = 0;
     this.timestamps = [];
     this.genStart = 0;
@@ -105,13 +135,23 @@ export class StatsManager {
     this.render();
   }
 
-  /** Records one tapped SSE chunk (`prompt_progress` and/or `timings`). */
-  onChunk(data: { progress?: PromptProgress; timings?: LlamaTimings }): void {
+  /** Records one tapped SSE chunk (progress, timings, usage and/or a token delta). */
+  onChunk(data: {
+    progress?: PromptProgress;
+    timings?: LlamaTimings;
+    usage?: LlamaUsage;
+    delta?: DeltaKind;
+  }): void {
     if (data.progress) {
       this.progress = data.progress;
       this.hasPrefill = true;
     }
     if (data.timings) this.timings = data.timings;
+    if (data.usage) this.streamUsage = data.usage;
+    if (data.delta) {
+      this.recordDelta(data.delta, "tap");
+      return;
+    }
     this.render();
   }
 
@@ -127,12 +167,30 @@ export class StatsManager {
     ) {
       return;
     }
+    this.recordDelta(
+      delta.type === "toolcall_delta"
+        ? "toolcall"
+        : delta.type === "thinking_delta"
+          ? "thinking"
+          : "text",
+      "events",
+    );
+  }
+
+  /**
+   * Counts one token arrival from either feed. The first feed to report a
+   * delta for this stream claims counting (see `deltaSource`), so the tap
+   * and message_update never double-count the same token.
+   */
+  private recordDelta(kind: DeltaKind, source: "tap" | "events"): void {
+    if (this.deltaSource === null) this.deltaSource = source;
+    else if (this.deltaSource !== source) return;
 
     if (!this.generating) {
       this.generating = true;
       this.genStart = Date.now();
     }
-    this.toolCalling = delta.type === "toolcall_delta";
+    this.toolCalling = kind === "toolcall";
     this.tokenCount++;
     const now = Date.now();
     this.timestamps.push(now);
@@ -145,13 +203,35 @@ export class StatsManager {
     const message = event.message;
     if (messageProvider(message) !== LLAMA_PROVIDER_ID) return;
     if (!this.generating && !this.hasPrefill && !this.timings) return;
+    this.finalize(
+      message.role === "assistant" && message.usage ? message.usage : undefined,
+    );
+  }
 
-    // Token count: server usage > server timings (spec-decode-accurate)
-    // > delta count.
+  /**
+   * Finalizes the stats when the tapped stream body completes. Covers
+   * requests that bypass the agent loop (compaction, branch summarization),
+   * where no `message_end` event fires. For regular turns `message_end`
+   * follows and re-finalizes with the authoritative usage.
+   */
+  finishStream(): void {
+    if (this.finalStats) return;
+    if (!this.generating && !this.hasPrefill && !this.timings) return;
+    this.finalize(undefined);
+  }
+
+  /** Shared finalization core for message_end and stream completion. */
+  private finalize(usage?: { output: number }): void {
+    // Token count: message usage > server timings (spec-decode-accurate)
+    // > chunk usage > delta count.
+    const chunkTokens = this.streamUsage?.completion_tokens;
     const genTokens =
-      message.role === "assistant" && message.usage.output > 0
-        ? message.usage.output
-        : this.serverTokens() ?? this.tokenCount;
+      usage && usage.output > 0
+        ? usage.output
+        : this.serverTokens() ??
+          (typeof chunkTokens === "number" && chunkTokens > 0
+            ? chunkTokens
+            : this.tokenCount);
 
     // Speed: prefer the server's own clock, fall back to local elapsed time.
     let avgTps: number;
@@ -206,27 +286,49 @@ export class StatsManager {
 
   /**
    * Wraps a fetch so that successful response bodies are tapped for
-   * `prompt_progress` chunks. Bytes pass through unchanged; the wrapped
-   * stream is cancel-safe. Intended to be passed as `options.fetch` to the
-   * provider's `streamSimple`, so only this provider's requests are touched.
+   * `prompt_progress`, `timings`, token deltas and usage. Request bodies get
+   * `return_progress: true` injected (see {@link withReturnProgress});
+   * response bytes pass through unchanged and the wrapped stream is
+   * cancel-safe. Intended to be passed as `options.fetch` to the provider's
+   * `streamSimple`, so only this provider's requests are touched.
+   *
+   * Tapping at the fetch level (rather than relying on extension events)
+   * keeps stats working for requests that bypass the agent loop —
+   * compaction and branch summarization never fire
+   * `before_provider_request` / `message_update` / `message_end`.
    */
   tapFetch(base?: typeof fetch): typeof fetch {
     const upstream = base ?? globalThis.fetch.bind(globalThis);
     return async (input, init) => {
-      const response = await upstream(input, init);
+      const response = await upstream(input, withReturnProgress(init));
       if (!response.ok || !response.body) return response;
 
       this.beginStream();
-      const body = tapSseBody(response.body, (chunk) => {
-        const data: { progress?: PromptProgress; timings?: LlamaTimings } = {};
-        if (chunk.prompt_progress && typeof chunk.prompt_progress === "object") {
-          data.progress = chunk.prompt_progress as PromptProgress;
-        }
-        if (chunk.timings && typeof chunk.timings === "object") {
-          data.timings = chunk.timings as LlamaTimings;
-        }
-        if (data.progress || data.timings) this.onChunk(data);
-      });
+      const body = tapSseBody(
+        response.body,
+        (chunk) => {
+          const data: {
+            progress?: PromptProgress;
+            timings?: LlamaTimings;
+            usage?: LlamaUsage;
+            delta?: DeltaKind;
+          } = {};
+          if (chunk.prompt_progress && typeof chunk.prompt_progress === "object") {
+            data.progress = chunk.prompt_progress as PromptProgress;
+          }
+          if (chunk.timings && typeof chunk.timings === "object") {
+            data.timings = chunk.timings as LlamaTimings;
+          }
+          if (chunk.usage && typeof chunk.usage === "object") {
+            data.usage = chunk.usage as LlamaUsage;
+          }
+          const delta = chunkDeltaKind(chunk);
+          if (delta) data.delta = delta;
+          if (data.progress || data.timings || data.usage || data.delta)
+            this.onChunk(data);
+        },
+        () => this.finishStream(),
+      );
       return new Response(body, {
         status: response.status,
         statusText: response.statusText,
@@ -350,14 +452,17 @@ function formatDuration(seconds: number): string {
 /**
  * Passes a stream's bytes through unchanged while parsing its SSE `data:`
  * lines and handing each decoded JSON object to `onChunk`. Parse errors are
- * ignored; the stream stays intact for the real consumer.
+ * ignored; the stream stays intact for the real consumer. `onComplete` fires
+ * only when the body ends naturally (not on cancel or error).
  */
 function tapSseBody(
   body: ReadableStream<Uint8Array>,
   onChunk: (chunk: Record<string, unknown>) => void,
+  onComplete?: () => void,
 ): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   let buffer = "";
+  let cancelled = false;
   const decoder = new TextDecoder();
 
   return new ReadableStream({
@@ -384,12 +489,88 @@ function tapSseBody(
 
           controller.enqueue(value);
         }
+        if (!cancelled) onComplete?.();
       } finally {
         controller.close();
       }
     },
     cancel(reason) {
+      cancelled = true;
       reader.cancel(reason).catch(() => undefined);
     },
   });
+}
+
+/** Reasoning fields pi-ai's parser accepts, in priority order. */
+const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"] as const;
+
+/**
+ * Detects a token-carrying delta in an SSE chunk, mirroring the cases
+ * pi-ai turns into `text_delta` / `thinking_delta` / `toolcall_delta`.
+ */
+function chunkDeltaKind(chunk: Record<string, unknown>): DeltaKind | null {
+  const choices = chunk.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const choice = choices[0] as { delta?: unknown } | undefined;
+  const delta = choice?.delta;
+  if (typeof delta !== "object" || delta === null) return null;
+  const d = delta as Record<string, unknown>;
+  if (typeof d.content === "string" && d.content.length > 0) return "text";
+  for (const field of REASONING_FIELDS) {
+    const value = d[field];
+    if (typeof value === "string" && value.length > 0) return "thinking";
+  }
+  if (Array.isArray(d.tool_calls) && d.tool_calls.length > 0) return "toolcall";
+  return null;
+}
+
+/**
+ * Adds `return_progress: true` to a JSON request body so the server emits
+ * `prompt_progress` SSE chunks. The tap is only attached to this provider's
+ * `streamSimple`, so no other traffic is affected. Non-JSON-object bodies
+ * pass through untouched; an already-injected flag (from
+ * `before_provider_request`) short-circuits the rewrite.
+ */
+function withReturnProgress(init?: RequestInit): RequestInit | undefined {
+  if (!init || typeof init.body !== "string") return init;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(init.body);
+  } catch {
+    return init;
+  }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+    return init;
+  const body = payload as Record<string, unknown>;
+  if (body.return_progress === true) return init;
+  body.return_progress = true;
+  // The rewritten body has a different length: drop content-length so the
+  // runtime recomputes it.
+  const headers = withoutContentLength(init.headers);
+  return {
+    ...init,
+    body: JSON.stringify(body),
+    ...(headers !== undefined ? { headers } : {}),
+  };
+}
+
+/** Returns `headers` without a content-length entry (any header shape). */
+function withoutContentLength(
+  headers: RequestInit["headers"],
+): RequestInit["headers"] | undefined {
+  if (!headers) return undefined;
+  if (typeof (headers as Headers).set === "function") {
+    const copy = new Headers(headers);
+    copy.delete("content-length");
+    return copy;
+  }
+  if (Array.isArray(headers)) {
+    return headers.filter(([name]) => name.toLowerCase() !== "content-length");
+  }
+  const record = headers as Record<string, string>;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(record)) {
+    if (name.toLowerCase() !== "content-length") out[name] = value;
+  }
+  return out;
 }

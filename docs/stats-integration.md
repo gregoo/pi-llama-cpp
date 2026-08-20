@@ -7,6 +7,31 @@ tok/s via `message_update`, prefill via a provider-scoped `options.fetch`
 tap on the wrapper's `streamSimple`. Live-verified: prompt_progress chunks
 extracted through the real Pi stream path, body pass-through intact.
 
+**Compaction coverage (added):** compaction and branch summarization bypass
+the agent loop — they call `completeSummarization()` straight through the
+provider's `streamSimple`, so `before_provider_request` / `message_update` /
+`message_end` never fire. The fetch tap is now the primary feed and handles
+them fully:
+
+- **Request injection in the tap** — `withReturnProgress()` rewrites the JSON
+  body to add `return_progress: true` (and drops the stale content-length).
+  Scoped by construction: the tap only wraps this provider's `streamSimple`.
+  The `before_provider_request` injection stays for agent-loop requests;
+  whichever runs first wins, the other short-circuits.
+- **Decode from raw chunks** — `chunkDeltaKind()` mirrors pi-ai's parser
+  (`content`, reasoning fields, `tool_calls`) and counts token arrivals
+  directly off the SSE stream. First-wins `deltaSource` dedup means the tap
+  and `message_update` never double-count the same token.
+- **Final stats on body completion** — when the tapped body ends naturally,
+  `finishStream()` finalizes (chunk `usage` as a token-count fallback).
+  For regular turns `message_end` follows and re-finalizes with authoritative
+  usage; for compaction it is the only finalization.
+- **UI attach at `session_start`** — so streams that fire before any per-turn
+  event (auto-compaction on the first turn after resume) still render.
+
+Live-verified against a mock router: `/compact` shows the prefill progress
+bar, live decode tok/s and final stats, exactly like a normal turn.
+
 ---
 
 Original analysis of merging the standalone stats extension (real-time

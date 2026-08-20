@@ -75,7 +75,7 @@ describe("StatsManager.tapFetch", () => {
     expect(setWidget).not.toHaveBeenCalled();
   });
 
-  it("ignores chunks without prompt_progress and malformed lines", async () => {
+  it("tracks token deltas from raw chunks and finalizes when the body ends", async () => {
     const stats = new StatsManager();
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
@@ -95,11 +95,18 @@ describe("StatsManager.tapFetch", () => {
 
     await (await tapped("http://x", {})).text();
 
-    // Only the prompt_progress chunk produced content (beginStream clears)
+    // beginStream clears; the delta chunk drives the decode line, the
+    // progress chunk adds the bar, and stream end finalizes (no
+    // message_end exists for non-agent-loop requests)
     const contents = setWidget.mock.calls
       .map((call) => call[1])
-      .filter((content) => content !== undefined);
-    expect(contents).toEqual([[expect.stringContaining("50%")]]);
+      .filter((content): content is string[] => content !== undefined);
+    expect(contents).toHaveLength(3);
+    expect(contents[0][0]).toBe("✨ 1 tokens"); // decode from raw delta
+    expect(contents[1][0]).toContain("50%"); // progress bar appears
+    expect(contents[1][0]).toContain("✨ 1 tokens"); // decode line persists
+    expect(contents[2][0]).toContain("📖 5"); // final prefill from progress
+    expect(contents[2][0]).toContain("✨ 1 @"); // final decode from delta count
   });
 
   it("supports cancellation of the tapped stream", async () => {
@@ -349,17 +356,25 @@ describe("StatsManager server timings", () => {
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
-    const base = vi.fn(
-      async () =>
-        new Response(
-          sseBody([
-            'data: {"prompt_progress":{"total":100,"processed":50,"time_ms":100},"timings":{"predicted_n":7,"predicted_per_second":3.5}}\n\n',
-            "data: [DONE]\n\n",
-          ]),
-          { status: 200 },
-        ),
+    // Deferred body so the message update arrives while the stream is open
+    let push: (chunk: string) => void = () => undefined;
+    let finish: () => void = () => undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        push = (chunk) => controller.enqueue(encoder.encode(chunk));
+        finish = () => controller.close();
+      },
+    });
+
+    const base = vi.fn(async () => new Response(body, { status: 200 }));
+    const response = await stats.tapFetch(base as any)("http://x", {});
+    const reader = response.body!.getReader();
+
+    push(
+      'data: {"prompt_progress":{"total":100,"processed":50,"time_ms":100},"timings":{"predicted_n":7,"predicted_per_second":3.5}}\n\n',
     );
-    await (await stats.tapFetch(base as any)("http://x", {})).text();
+    await reader.read(); // let the tap process the chunk
 
     // Timings are captured by the tap; the decode line appears on update
     stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
@@ -367,6 +382,153 @@ describe("StatsManager server timings", () => {
     expect(msg).toContain("50%");
     expect(msg).toContain("7 tokens");
     expect(msg).toContain("3.5 tok/s");
+
+    push("data: [DONE]\n\n");
+    finish();
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+  });
+});
+
+describe("StatsManager compaction coverage", () => {
+  // Compaction and branch summarization bypass the agent loop: no
+  // before_provider_request, no message_update, no message_end. Everything
+  // must work from the fetch tap alone.
+
+  it("injects return_progress into the request body and drops content-length", async () => {
+    const stats = new StatsManager();
+    const { ctx } = makeCtx();
+    stats.attachUi(ctx);
+
+    const base = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(sseBody(["data: [DONE]\n\n"]), { status: 200 }),
+    );
+    const tapped = stats.tapFetch(base as any);
+    await (
+      await tapped("http://x/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: "m", messages: [] }),
+        headers: new Headers({
+          "content-type": "application/json",
+          "content-length": "123",
+        }),
+      })
+    ).text();
+
+    expect(base).toHaveBeenCalledTimes(1);
+    const init = base.mock.calls[0][1] as RequestInit;
+    const sent = JSON.parse(init.body as string);
+    expect(sent.return_progress).toBe(true);
+    expect((init.headers as Headers).has("content-length")).toBe(false);
+    expect((init.headers as Headers).get("content-type")).toBe(
+      "application/json",
+    );
+  });
+
+  it("passes non-JSON and already-injected bodies through untouched", async () => {
+    const stats = new StatsManager();
+    const { ctx } = makeCtx();
+    stats.attachUi(ctx);
+
+    const base = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(sseBody(["data: [DONE]\n\n"]), { status: 200 }),
+    );
+    const tapped = stats.tapFetch(base as any);
+
+    const plainBody = "not-json-at-all";
+    await (await tapped("http://x", { body: plainBody })).text();
+    expect(base.mock.calls[0][1]).toEqual({ body: plainBody });
+
+    // before_provider_request already injected it: no re-serialization
+    const injected = JSON.stringify({ model: "m", return_progress: true });
+    await (await tapped("http://x", { body: injected })).text();
+    expect(base.mock.calls[1][1]).toEqual({ body: injected });
+  });
+
+  it("shows prefill, decode speed and final stats for a compaction-style stream with no agent events", async () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    const base = vi.fn(
+      async () =>
+        new Response(
+          sseBody([
+            'data: {"prompt_progress":{"total":4096,"processed":2048,"time_ms":100}}\n\n',
+            'data: {"prompt_progress":{"total":4096,"processed":4096,"time_ms":200}}\n\n',
+            'data: {"choices":[{"delta":{"content":"A"}}],"timings":{"predicted_n":1,"predicted_per_second":20}}\n\n',
+            'data: {"choices":[{"delta":{"content":"B"}}],"timings":{"predicted_n":2,"predicted_per_second":20,"predicted_ms":100}}\n\n',
+            'data: {"usage":{"prompt_tokens":4096,"completion_tokens":2}}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+          { status: 200 },
+        ),
+    );
+
+    await (await stats.tapFetch(base as any)("http://x", {})).text();
+
+    const contents = setWidget.mock.calls
+      .map((call) => call[1])
+      .filter((content): content is string[] => content !== undefined);
+    // Prefill progress bar while the summary prompt is processed
+    expect(contents.some((c) => c[0].includes("50%"))).toBe(true);
+    // Live decode speed from raw chunks (no message_update at all)
+    expect(
+      contents.some(
+        (c) => c[0].includes("20.0 tok/s") && c[0].includes("tokens"),
+      ),
+    ).toBe(true);
+    // Final stats rendered when the body completes (no message_end)
+    const last = contents.at(-1)![0];
+    expect(last).toContain("📖 4096 @ 20480.0 tok/s");
+    expect(last).toContain("✨ 2 @ 20.0 tok/s");
+  });
+
+  it("does not double-count tokens when both the tap and message_update fire", async () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    // Deferred body: the tap sees the delta first and claims counting;
+    // the matching agent-loop updates must then be ignored.
+    let push: (chunk: string) => void = () => undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        push = (chunk) =>
+          controller.enqueue(new TextEncoder().encode(chunk));
+      },
+    });
+
+    const base = vi.fn(async () => new Response(body, { status: 200 }));
+    const response = await stats.tapFetch(base as any)("http://x", {});
+    const reader = response.body!.getReader();
+
+    push('data: {"choices":[{"delta":{"content":"A"}}]}\n\n');
+    await reader.read();
+
+    stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+    stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+
+    const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+    expect(msg).toContain("1 tokens"); // counted once, not three times
+  });
+
+  it("still counts from message_update when the tap reports no deltas", () => {
+    const stats = new StatsManager();
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    stats.beginStream();
+    for (let i = 0; i < 3; i++) {
+      stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+    }
+
+    const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+    expect(msg).toContain("3 tokens");
   });
 });
 

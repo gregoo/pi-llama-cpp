@@ -28,6 +28,11 @@ export default async function (pi: ExtensionAPI) {
   // start: /new and /resume rebuild the whole runtime (fresh ModelRuntime,
   // re-executed extension factories), so each one needs its own wrap.
   pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
+    // The stats tap renders without a context; remember the UI up front so
+    // streams that fire before any per-turn event (e.g. auto-compaction on
+    // the first turn after resume) still have a widget to draw in.
+    stats.attachUi(ctx);
+
     const wrapped = wrapper.init(pi, ctx);
 
     // Register a default model for llama.cpp in Pi's login flow so
