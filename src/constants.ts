@@ -112,3 +112,26 @@ export const SAMPLING_PARAM_FIELDS = [
 export const THINKING_BUDGET_OVERRIDE_LEVELS = THINKING_LEVELS.filter(
   (level) => level !== "off" && level !== "max",
 ) as ModelThinkingLevel[];
+
+/**
+ * `unknown`-model recovery: default number of backend re-reads. Must be
+ * > 0 (see {@link RetryConfig}).
+ */
+export const DEFAULT_RETRY_TRIES = 3;
+
+/**
+ * `unknown`-model recovery: default delay in seconds between backend
+ * re-reads. Must be > 0 (see {@link RetryConfig}).
+ */
+export const DEFAULT_RETRY_DELAY_SECONDS = 10;
+
+/**
+ * Backend re-read retry configuration for `unknown`-model recovery (the
+ * `llamaRetry` setting).
+ */
+export interface RetryConfig {
+  /** Number of backend re-reads (must be > 0). */
+  tries: number;
+  /** Delay in seconds between re-reads (must be > 0). */
+  delaySeconds: number;
+}

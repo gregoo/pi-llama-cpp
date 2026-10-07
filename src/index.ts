@@ -15,6 +15,7 @@ import { EventManager } from "./managers/events";
 import { StatsManager } from "./managers/stats";
 import { LlamaProviderWrapper } from "./provider/wrapper";
 import { setLlamaDefaultModel } from "./provider/defaultModel";
+import { isUnknownModel, recoverLlamaModel } from "./provider/recovery";
 import { ConfigResolver } from "./resolver";
 
 export default async function (pi: ExtensionAPI) {
@@ -60,7 +61,17 @@ export default async function (pi: ExtensionAPI) {
       // object on every getModels() call, so identity can never be used to
       // detect "already supercharged" — the re-select always runs, which is
       // harmless (setModel to an equal model keeps the current level).
-      const current = ctx.model;
+      let current = ctx.model;
+
+      // /new (or startup) can resolve to Pi's `unknown` placeholder when the
+      // llama.cpp catalogue was empty at resolution time (server still
+      // starting, no model loaded, failed refresh). Before accepting that,
+      // re-read the backend and try to restore the intended model.
+      if (isUnknownModel(current)) {
+        current = (await recoverLlamaModel(ctx, resolver)) ?? current;
+        if (isUnknownModel(current)) return;
+      }
+
       if (!current || current.provider !== LLAMA_PROVIDER_ID) return;
 
       const fresh = ctx.modelRegistry.find(LLAMA_PROVIDER_ID, current.id);
@@ -130,4 +141,9 @@ export default async function (pi: ExtensionAPI) {
   );
 
   pi.on("message_end", (event: MessageEndEvent) => stats.onMessageEnd(event));
+
+  // Drop any pending throttled stats redraw when this session's runtime is
+  // torn down (/new, /resume, quit, reload) so it cannot fire against a
+  // stale UI context.
+  pi.on("session_shutdown", () => stats.dispose());
 }

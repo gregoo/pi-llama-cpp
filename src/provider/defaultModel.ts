@@ -67,3 +67,15 @@ export async function setLlamaDefaultModel(modelId: string): Promise<void> {
   const map = await getDefaultModelMap();
   if (map) map[LLAMA_PROVIDER_ID] = modelId;
 }
+
+/**
+ * Reads back the model registered as llama.cpp's default in Pi's in-memory
+ * map — i.e. the most recently selected llama.cpp model in this process
+ * (the map is updated on every llama.cpp `model_select`). Returns
+ * `undefined` when Pi cannot be found or no model has been registered yet.
+ */
+export async function getLlamaDefaultModel(): Promise<string | undefined> {
+  const map = await getDefaultModelMap();
+  const value = map?.[LLAMA_PROVIDER_ID];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}

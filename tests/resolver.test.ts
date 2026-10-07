@@ -6,6 +6,8 @@ const mockSettingsManager = vi.hoisted(() => ({
   getProjectSettings: vi.fn(),
   getGlobalSettings: vi.fn(),
   getThinkingBudgets: vi.fn(),
+  getDefaultProvider: vi.fn(),
+  getDefaultModel: vi.fn(),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -27,6 +29,10 @@ describe("thinking configuration resolution", () => {
   const mockGetThinkingBudgets = vi.mocked(
     mockSettingsManager.getThinkingBudgets,
   );
+  const mockGetDefaultProvider = vi.mocked(
+    mockSettingsManager.getDefaultProvider,
+  );
+  const mockGetDefaultModel = vi.mocked(mockSettingsManager.getDefaultModel);
 
   const FULL_MAP: Record<string, string> = {
     off: "off",
@@ -43,6 +49,113 @@ describe("thinking configuration resolution", () => {
     mockGetProjectSettings.mockReturnValue({});
     mockGetGlobalSettings.mockReturnValue({});
     mockGetThinkingBudgets.mockReturnValue(undefined);
+    mockGetDefaultProvider.mockReturnValue(undefined);
+    mockGetDefaultModel.mockReturnValue(undefined);
+  });
+
+  describe("persisted settings default accessors", () => {
+    it("passes through the default provider", () => {
+      mockGetDefaultProvider.mockReturnValue("llama.cpp");
+
+      expect(new ConfigResolver().getDefaultProvider()).toBe("llama.cpp");
+    });
+
+    it("passes through the default model id", () => {
+      mockGetDefaultModel.mockReturnValue("qwen3.5-27b");
+
+      expect(new ConfigResolver().getDefaultModel()).toBe("qwen3.5-27b");
+    });
+
+    it("returns undefined when no default is configured", () => {
+      expect(new ConfigResolver().getDefaultProvider()).toBeUndefined();
+      expect(new ConfigResolver().getDefaultModel()).toBeUndefined();
+    });
+  });
+
+  describe("llamaRetry resolution", () => {
+    const setRetry = (value: unknown, level: "project" | "global") => {
+      const settings = { llamaRetry: value };
+      if (level === "project") mockGetProjectSettings.mockReturnValue(settings);
+      else mockGetGlobalSettings.mockReturnValue(settings);
+    };
+
+    it("uses the defaults when no setting is present", () => {
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 3,
+        delaySeconds: 10,
+      });
+    });
+
+    it("applies valid values", () => {
+      setRetry({ tries: 5, delaySeconds: 2 }, "project");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 5,
+        delaySeconds: 2,
+      });
+    });
+
+    it("accepts fractional delaySeconds", () => {
+      setRetry({ delaySeconds: 0.5 }, "global");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 3,
+        delaySeconds: 0.5,
+      });
+    });
+
+    it("falls back field by field on invalid values", () => {
+      setRetry({ tries: 0, delaySeconds: -1 }, "project");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 3,
+        delaySeconds: 10,
+      });
+    });
+
+    it("rejects non-numeric and non-integer tries", () => {
+      setRetry({ tries: "many", delaySeconds: 4 }, "project");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 3,
+        delaySeconds: 4,
+      });
+
+      setRetry({ tries: 2.5, delaySeconds: 4 }, "project");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 3,
+        delaySeconds: 4,
+      });
+    });
+
+    it("rejects non-finite delaySeconds", () => {
+      setRetry({ tries: 2, delaySeconds: Number.POSITIVE_INFINITY }, "project");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 2,
+        delaySeconds: 10,
+      });
+    });
+
+    it("treats a non-object entry as absent", () => {
+      setRetry("soon", "project");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 3,
+        delaySeconds: 10,
+      });
+    });
+
+    it("prefers project entries over global entries", () => {
+      setRetry({ tries: 7, delaySeconds: 1 }, "project");
+      setRetry({ tries: 1, delaySeconds: 9 }, "global");
+
+      expect(new ConfigResolver().resolveRetryConfig()).toEqual({
+        tries: 7,
+        delaySeconds: 1,
+      });
+    });
   });
 
   describe("global default map (no matching pattern)", () => {

@@ -35,11 +35,11 @@ pi install https://github.com/gregoo/pi-llama-cpp
 
 ## Commands
 
-| Command            | Description                                                                                     |
-| ------------------ | ----------------------------------------------------------------------------------------------- |
-| `/sampling`        | Open the sampling set picker for the current model.                                             |
-| `/sampling <name>` | Select the named sampling set for the current model directly.                                   |
-| `/sampling none`   | Clear the selection (server/model defaults apply).                                              |
+| Command            | Description                                                   |
+| ------------------ | ------------------------------------------------------------- |
+| `/sampling`        | Open the sampling set picker for the current model.           |
+| `/sampling <name>` | Select the named sampling set for the current model directly. |
+| `/sampling none`   | Clear the selection (server/model defaults apply).            |
 
 ## Thinking Levels
 
@@ -152,6 +152,26 @@ A `samplingMap` defines **named sets of sampling parameters** for a model, indep
 - **Selection** — `/sampling` shows a picker of the current model's sets (plus `none`); `/sampling <name>` selects directly; `/sampling none` clears. The selection is per model and session-only: switching models remembers each model's choice, and restarting Pi resets everything. When a set is active, the footer shows `sampling: <name>`.
 - **Parameters** — set keys pass through **verbatim** to the request payload, so they must match the llama.cpp server's field names (e.g. `repeat_penalty`, not the HF/transformers `repetition_penalty`). All values are numbers. Unknown or non-numeric fields are dropped.
 - **Supported fields** — `temperature`, `top_k`, `top_p`, `min_p`, `top_nsigma`, `typical_p`, `xtc_probability`, `xtc_threshold`, `repeat_penalty`, `penalty_last_n`, `presence_penalty`, `frequency_penalty`, `dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`, `adaptive_target`, `adaptive_decay`, `dynatemp_range`, `dynatemp_exp`, `mirostat`, `mirostat_lms_lr`, `mirostat_ent_max`, `seed`.
+
+## Model recovery
+
+If a session resolves to Pi's `unknown` placeholder model — e.g. after `/new` while the llama.cpp catalogue was still empty (server starting, model still loading, failed refresh) — the extension re-reads the backend in a short re-poll and restores your model: the most recently selected llama.cpp model, else the persisted settings default, else the first loaded model. This only runs when your settings default provider is llama.cpp; other providers keep Pi's stock behavior.
+
+The re-poll is configured via the `llamaRetry` setting (project-level overriding global):
+
+```json
+{
+  "llamaRetry": {
+    "tries": 3,
+    "delaySeconds": 10
+  }
+}
+```
+
+- **`tries`** — number of backend re-reads (integer > 0, default `3`).
+- **`delaySeconds`** — wait between re-reads in seconds (> 0, default `10`). No wait after the last read.
+
+Invalid values fall back to the defaults field by field. If the backend still has no models after all tries, you get a notification and Pi keeps the placeholder.
 
 ## Dependencies
 

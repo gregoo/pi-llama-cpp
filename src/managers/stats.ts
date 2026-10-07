@@ -51,6 +51,15 @@ const WIDGET_KEY = "llama-stats";
 const MAX_TOKEN_TIMESTAMPS = 50;
 
 /**
+ * Minimum wall-clock gap between widget redraws. The tap and the
+ * message_update feed both fire per SSE token, so without this the widget
+ * (a full component rebuild plus a TUI render request) would be rebuilt on
+ * every token on the SSE processing path. Redraws are coalesced to a few
+ * per second; stream start and finalization always draw immediately.
+ */
+const RENDER_INTERVAL_MS = 200;
+
+/**
  * Real-time generation stats for the built-in llama.cpp provider.
  *
  * The fetch tap (`tapFetch()`, wired into the wrapper's `streamSimple`) is
@@ -74,11 +83,22 @@ const MAX_TOKEN_TIMESTAMPS = 50;
  * where no `message_end` ever fires.
  *
  * Display uses the `llama-stats` widget slot, separate from the sampling
- * footer status.
+ * footer status. Redraws are throttled to a few per second (the feeds fire
+ * per token, and Pi's own "Working" editor-border indicator covers the
+ * in-flight state, so the widget shows no filler text while idle).
  */
 export class StatsManager {
   private ui: ExtensionContext["ui"] | null = null;
   private hasUI = false;
+
+  /** Render throttle state (see {@link RENDER_INTERVAL_MS}). */
+  private renderTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastRenderAt = 0;
+  private readonly renderIntervalMs: number;
+
+  constructor(renderIntervalMs: number = RENDER_INTERVAL_MS) {
+    this.renderIntervalMs = renderIntervalMs;
+  }
 
   // Prefill state (fed by the stream tap)
   private progress: PromptProgress | null = null;
@@ -132,7 +152,7 @@ export class StatsManager {
     this.generating = false;
     this.toolCalling = false;
     this.finalStats = null;
-    this.render();
+    this.render(true);
   }
 
   /** Records one tapped SSE chunk (progress, timings, usage and/or a token delta). */
@@ -153,6 +173,17 @@ export class StatsManager {
       return;
     }
     this.render();
+  }
+
+  /**
+   * Cancels any pending throttled redraw. Call when the UI goes away so a
+   * stray timer cannot fire against a stale widget slot.
+   */
+  dispose(): void {
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
   }
 
   /** Tracks decode speed from per-delta message updates. */
@@ -285,7 +316,55 @@ export class StatsManager {
     };
     this.generating = false;
     this.toolCalling = false;
-    this.render();
+    this.render(true);
+  }
+
+  /**
+   * Schedules a widget redraw, coalescing the per-token feed into at most
+   * one draw per {@link renderIntervalMs}. `force` bypasses the throttle
+   * (stream start / finalization).
+   */
+  private render(force = false): void {
+    if (!this.ui || !this.hasUI) return;
+
+    // Throttling disabled: draw on every call (tests, high-refresh UIs).
+    if (this.renderIntervalMs <= 0) {
+      this.draw();
+      return;
+    }
+
+    const now = Date.now();
+    if (force || now - this.lastRenderAt >= this.renderIntervalMs) {
+      this.cancelPendingRender();
+      this.lastRenderAt = now;
+      this.draw();
+      return;
+    }
+    if (!this.renderTimer) {
+      this.renderTimer = setTimeout(
+        () => {
+          this.renderTimer = null;
+          this.lastRenderAt = Date.now();
+          this.draw();
+        },
+        this.renderIntervalMs - (now - this.lastRenderAt),
+      );
+    }
+  }
+
+  private cancelPendingRender(): void {
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
+  }
+
+  private draw(): void {
+    if (!this.ui) return;
+    const message = this.message();
+    // No parts means nothing to show: Pi's own "Working" indicator (editor
+    // border) covers the in-flight state, so the plugin adds no filler text.
+    this.ui.setWidget(WIDGET_KEY, message ? [message] : undefined);
   }
 
   /**
@@ -365,13 +444,6 @@ export class StatsManager {
     return (recent.length - 1) / (delta / 1000);
   }
 
-  private render(): void {
-    if (!this.ui || !this.hasUI) return;
-    const idle =
-      !this.generating && !this.hasPrefill && !this.finalStats && !this.timings;
-    this.ui.setWidget(WIDGET_KEY, idle ? undefined : [this.message()]);
-  }
-
   private message(): string {
     const parts: string[] = [];
 
@@ -437,7 +509,7 @@ export class StatsManager {
       parts.push(decode);
     }
 
-    return parts.join(" · ") || "Working...";
+    return parts.join(" · ");
   }
 }
 

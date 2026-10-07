@@ -1,10 +1,13 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
+  DEFAULT_RETRY_DELAY_SECONDS,
+  DEFAULT_RETRY_TRIES,
   DEFAULT_THINKING_LEVELS,
   SAMPLING_PARAM_FIELDS,
   THINKING_BUDGET_OVERRIDE_LEVELS,
   THINKING_LEVELS,
+  type RetryConfig,
   type ThinkingLevelSpec,
 } from "./constants";
 
@@ -21,6 +24,60 @@ export class ConfigResolver {
    */
   resolveThinkingLevel(): ModelThinkingLevel | undefined {
     return this.settingsManager.getDefaultThinkingLevel();
+  }
+
+  /**
+   * The provider from the persisted Pi settings default — the model Pi
+   * tries to restore at session start (a `/model` selection made default).
+   */
+  getDefaultProvider(): string | undefined {
+    return this.settingsManager.getDefaultProvider();
+  }
+
+  /** The model id from the persisted Pi settings default. */
+  getDefaultModel(): string | undefined {
+    return this.settingsManager.getDefaultModel();
+  }
+
+  /**
+   * Resolves the backend re-read retry configuration for `unknown`-model
+   * recovery.
+   *
+   * Reads the `llamaRetry` setting (project-level overriding global):
+   *
+   * ```json
+   * {
+   *   "llamaRetry": {
+   *     "tries": 3,
+   *     "delaySeconds": 10
+   *   }
+   * }
+   * ```
+   *
+   * `tries` is the number of backend re-reads (default
+   * {@link DEFAULT_RETRY_TRIES}); `delaySeconds` the wait between them
+   * (default {@link DEFAULT_RETRY_DELAY_SECONDS}). Missing, non-numeric or
+   * non-positive values fall back to the defaults field by field.
+   *
+   * @returns The effective retry configuration
+   */
+  resolveRetryConfig(): RetryConfig {
+    const project = this.settingsManager.getProjectSettings() as Record<
+      string,
+      unknown
+    >;
+    const global = this.settingsManager.getGlobalSettings() as Record<
+      string,
+      unknown
+    >;
+    const raw = (project.llamaRetry ?? global.llamaRetry) as
+      Record<string, unknown> | undefined;
+
+    return {
+      tries: positiveInt(raw?.tries) ?? DEFAULT_RETRY_TRIES,
+      delaySeconds:
+        positiveNumber(raw?.delaySeconds) ?? DEFAULT_RETRY_DELAY_SECONDS,
+    };
   }
 
   /**
@@ -312,4 +369,18 @@ export class ConfigResolver {
 interface LlamaModelsConfigEntry {
   thinkingLevelMap?: unknown;
   samplingMap?: unknown;
+}
+
+/** A positive integer, or null when the value is not one. */
+function positiveInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+/** A positive finite number, or null when the value is not one. */
+function positiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
 }

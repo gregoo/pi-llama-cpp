@@ -39,7 +39,7 @@ beforeEach(() => {
 
 describe("StatsManager.tapFetch", () => {
   it("passes the body through unchanged and extracts prompt_progress", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -58,7 +58,7 @@ describe("StatsManager.tapFetch", () => {
   });
 
   it("passes non-ok responses through untouched", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -72,7 +72,7 @@ describe("StatsManager.tapFetch", () => {
   });
 
   it("tracks token deltas from raw chunks and finalizes when the body ends", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -106,7 +106,7 @@ describe("StatsManager.tapFetch", () => {
   });
 
   it("supports cancellation of the tapped stream", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     let cancelInner: (reason?: unknown) => void = () => undefined;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -132,7 +132,7 @@ describe("StatsManager.tapFetch", () => {
 
 describe("StatsManager prefill display", () => {
   it("shows a progress bar with speed and ETA while prefilling", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -148,7 +148,7 @@ describe("StatsManager prefill display", () => {
   });
 
   it("excludes cached tokens from the progress percentage", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -165,7 +165,7 @@ describe("StatsManager prefill display", () => {
 
 describe("StatsManager decode display", () => {
   it("counts token deltas and shows rolling speed", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -185,7 +185,7 @@ describe("StatsManager decode display", () => {
   });
 
   it("uses the tool icon for tool call deltas", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -197,7 +197,7 @@ describe("StatsManager decode display", () => {
   });
 
   it("ignores non-delta events and other providers", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -211,7 +211,7 @@ describe("StatsManager decode display", () => {
 
 describe("StatsManager final stats", () => {
   it("finalizes on message end using the server-reported token count", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -241,7 +241,7 @@ describe("StatsManager final stats", () => {
   });
 
   it("falls back to the delta count when usage is absent", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -264,7 +264,7 @@ describe("StatsManager final stats", () => {
   });
 
   it("ignores message end for other providers", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -281,7 +281,7 @@ describe("StatsManager final stats", () => {
 
 describe("StatsManager server timings", () => {
   it("prefers server-reported token count and speed over delta timing", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -299,7 +299,7 @@ describe("StatsManager server timings", () => {
   });
 
   it("shows a timings-based prefill counter when prompt_progress is absent", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -311,7 +311,7 @@ describe("StatsManager server timings", () => {
   });
 
   it("builds the final line from timings when usage is absent, with draft acceptance", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -345,7 +345,7 @@ describe("StatsManager server timings", () => {
   });
 
   it("extracts both prompt_progress and timings from tapped chunks", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -391,7 +391,7 @@ describe("StatsManager compaction coverage", () => {
   // must work from the fetch tap alone.
 
   it("injects return_progress into the request body and drops content-length", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx } = makeCtx();
     stats.attachUi(ctx);
 
@@ -422,7 +422,7 @@ describe("StatsManager compaction coverage", () => {
   });
 
   it("passes non-JSON and already-injected bodies through untouched", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx } = makeCtx();
     stats.attachUi(ctx);
 
@@ -443,7 +443,7 @@ describe("StatsManager compaction coverage", () => {
   });
 
   it("shows prefill, decode speed and final stats for a compaction-style stream with no agent events", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -482,7 +482,7 @@ describe("StatsManager compaction coverage", () => {
   });
 
   it("does not double-count tokens when both the tap and message_update fire", async () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -510,7 +510,7 @@ describe("StatsManager compaction coverage", () => {
   });
 
   it("still counts from message_update when the tap reports no deltas", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -526,7 +526,7 @@ describe("StatsManager compaction coverage", () => {
 
 describe("StatsManager lifecycle", () => {
   it("beginStream clears previous generation state", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     const { ctx, setWidget } = makeCtx();
     stats.attachUi(ctx);
 
@@ -540,12 +540,85 @@ describe("StatsManager lifecycle", () => {
   });
 
   it("does not render without a UI (print mode)", () => {
-    const stats = new StatsManager();
+    const stats = new StatsManager(0);
     stats.attachUi({ ui: null, hasUI: false } as any);
 
     expect(() => {
       stats.beginStream();
       stats.onChunk({ progress: { total: 10, processed: 5 } });
     }).not.toThrow();
+  });
+});
+
+describe("StatsManager render throttle", () => {
+  it("coalesces per-chunk updates into interval-boundary draws", () => {
+    vi.useFakeTimers();
+    try {
+      const stats = new StatsManager(200);
+      const { ctx, setWidget } = makeCtx();
+      stats.attachUi(ctx);
+
+      stats.beginStream(); // forced draw — clears the widget
+      expect(setWidget).toHaveBeenCalledTimes(1);
+      expect(setWidget).toHaveBeenLastCalledWith("llama-stats", undefined);
+
+      // Fast token feed: no immediate draws (keeps the SSE path light)
+      for (let i = 0; i < 10; i++)
+        stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+      expect(setWidget).toHaveBeenCalledTimes(1);
+
+      // The coalesced draw fires at the interval boundary
+      vi.advanceTimersByTime(200);
+      expect(setWidget).toHaveBeenCalledTimes(2);
+      const msg = setWidget.mock.calls.at(-1)![1][0] as string;
+      expect(msg).toContain("10 tokens");
+
+      // A chunk right after a draw is throttled again
+      stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+      expect(setWidget).toHaveBeenCalledTimes(2);
+
+      // Finalization draws immediately
+      stats.onMessageEnd({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          provider: "llama.cpp",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      } as any);
+      expect(setWidget).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispose cancels a pending throttled draw", () => {
+    vi.useFakeTimers();
+    try {
+      const stats = new StatsManager(200);
+      const { ctx, setWidget } = makeCtx();
+      stats.attachUi(ctx);
+
+      stats.beginStream();
+      stats.onMessageUpdate(makeAssistantUpdate("text_delta"));
+      expect(setWidget).toHaveBeenCalledTimes(1); // only the begin clear
+
+      stats.dispose();
+      vi.advanceTimersByTime(1000);
+      expect(setWidget).toHaveBeenCalledTimes(1); // pending draw cancelled
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows no filler text while working — Pi's own Working indicator covers it", () => {
+    const stats = new StatsManager(0);
+    const { ctx, setWidget } = makeCtx();
+    stats.attachUi(ctx);
+
+    stats.beginStream();
+    // A stream that has started but produced no stats parts yet (no
+    // prompt_progress, no tokens counted): the widget stays hidden.
+    expect(setWidget).toHaveBeenLastCalledWith("llama-stats", undefined);
   });
 });

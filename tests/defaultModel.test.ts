@@ -82,4 +82,32 @@ describe("setLlamaDefaultModel", () => {
     await expect(setLlamaDefaultModel("x")).resolves.toBeUndefined();
     expect((globalThis as Record<string, any>).__piFakeMap).toBeUndefined();
   });
+
+  describe("getLlamaDefaultModel", () => {
+    it("reads back the registered model", async () => {
+      process.argv[1] = fakeBin;
+      const { getLlamaDefaultModel, setLlamaDefaultModel } =
+        await import("../src/provider/defaultModel");
+
+      await setLlamaDefaultModel("qwen38-27b");
+
+      await expect(getLlamaDefaultModel()).resolves.toBe("qwen38-27b");
+    });
+
+    it("returns undefined when nothing was registered", async () => {
+      process.argv[1] = fakeBin;
+      const { getLlamaDefaultModel } =
+        await import("../src/provider/defaultModel");
+
+      await expect(getLlamaDefaultModel()).resolves.toBeUndefined();
+    });
+
+    it("returns undefined when Pi cannot be located", async () => {
+      process.argv[1] = join(root, "does-not-exist");
+      const { getLlamaDefaultModel } =
+        await import("../src/provider/defaultModel");
+
+      await expect(getLlamaDefaultModel()).resolves.toBeUndefined();
+    });
+  });
 });
